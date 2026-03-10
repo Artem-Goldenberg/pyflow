@@ -35,6 +35,10 @@ Design rule: `pyflow` remains backend-agnostic at the DSL layer, with adapters f
 - Prefer dataclasses and abstract base classes when appropriate
 - Keep modules flat and focused
 - Keep APIs immutable by default for request composition
+- Prefer `typing.Sequence` in annotations (avoid `tuple[...]` in public API)
+- Use `.venv/bin/python` and `.venv/bin/pip` for Python tooling; never call system `python`/`pip`
+- Always work and install everything inside a local `.venv`
+- In test modules, keep helper/utility functions below the tests that use them
 
 ## Import Style
 
@@ -46,6 +50,7 @@ Sort imports in this order:
 ## Testing
 
 - Use `pytest`
+- Always run `.venv/bin/pyright` to check type errors after Python changes
 - Cover DSL operator behavior, typing-sensitive logic, and backend compilation boundaries
 - Add regression tests for operator precedence edge cases (`@` vs `>>`)
 

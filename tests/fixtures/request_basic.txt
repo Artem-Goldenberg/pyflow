@@ -1,0 +1,2 @@
+1. Fix the bug. Use documentation files: plan.md. Use code files: app.py.
+2. Before finishing, ensure tests pass: unit, integration. Use documentation files: tests.md.

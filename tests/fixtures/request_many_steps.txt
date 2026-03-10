@@ -1,0 +1,4 @@
+1. First line
+   Second line Use documentation files: notes.md.
+2. Follow up. Use code files: main.py.
+3. Before finishing, ensure tests pass: unit, integration.

@@ -1,6 +1,6 @@
 # pyflow
 
-`pyflow` is a high-level Python framework for composing agent requests as reusable, typed building blocks and executing them through the OpenHands SDK.
+`pyflow` is a high-level Python framework for composing agent requests as reusable, typed building blocks.
 
 The goal is to make agent automation feel like writing regular Python scripts instead of manually driving CLI/UI sessions.
 
@@ -8,21 +8,21 @@ The goal is to make agent automation feel like writing regular Python scripts in
 
 Early bootstrap stage. The repository now contains:
 
-- Typed request DSL with immutable composition via `>>` and `@`
-- A Pythonic `@tool` decorator for custom function tools
-- OpenHands backend adapter (`OpenHandsBackend`) for request execution
-- Initial architecture/implementation docs
-- OpenHands usage examples and pytest test setup
+- Immutable request DSL core (`Request`, `Step`, `Context`) with `>>` and `@`
+- File context helpers (`docs`, `code`) and test steps (`tests`)
+- Architecture/implementation docs
+- OpenHands usage examples (raw SDK)
+- pytest test setup
+
+Execution backends and model/runtime integration are planned but not implemented yet.
 
 ## Why This Exists
 
 You can describe an agent run as composable blocks:
 
-- What to do (`prompt`, task source, requested output)
-- Context (`docs.include`, `docs.exclude`, style profiles, constraints)
-- Tooling (`tool.use(...)`, custom function tools)
-- Post-steps (`tests.*`, `git.commit()`, `remote.new_mr(...)`)
-- Execution backend and model settings
+- What to do (`prompt`)
+- Context (`docs`, `code`)
+- Post-steps (`tests`)
 
 ## Quick Start
 
@@ -36,19 +36,14 @@ pytest
 ## Minimal pyflow Example
 
 ```python
-from pyflow import Model, code_style, docs, jira, tool
+from pyflow import code, docs, tests
 
-agent_request = (
-    jira.ticket(27253)
-    >> "Fix by introducing a new type class" @ code_style.standard()
-    @ docs.include("type-inference", "lsp")
-    @ docs.exclude("deprecated-code")
-    @ tool.use("terminal", "file_editor")
+request = (
+    "Fix the bug." @ docs("plan.md") @ code("app.py")
+    >> tests("unit", "integration")
 )
 
-model = Model(name="openai/gpt-4.1", api_key_env="OPENAI_API_KEY")
-session_log = model.run(agent_request)
-print(session_log.final_response)
+print(request.render())
 ```
 
 ## OpenHands Examples
@@ -68,5 +63,4 @@ See:
 ## Notes
 
 - OpenHands imports may emit LiteLLM network-fallback warnings in offline environments; this is expected.
-- The current `@tool` decorator supports function tools and auto-registration into OpenHands runtime.
 - Interactive notebook/REPL workflow is planned but not fully implemented yet.

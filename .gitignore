@@ -13,3 +13,9 @@ secrets
 .ruff_cache/
 .ipynb_checkpoints/
 *.so
+
+examples
+*-generated/
+PLAN.md
+prompt
+trash.py
