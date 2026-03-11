@@ -26,22 +26,26 @@ Responsible for custom tool definition and normalization:
 - `ToolRef` for OpenHands-compatible tool references
 - `@tool` decorator producing `FunctionTool`
 
-### 3. Runtime Model Layer (planned)
+### 3. Runtime Model Layer
 
 Responsible for model/provider config:
 
-- `Model` for runtime LLM settings
-- `ModelCatalog` for endpoint-based model discovery
+- `Model` abstract base with `build_llm()`
+- `AIModel` for provider-backed LLM config
+- `TestModel` for scripted offline `TestLLM` runs
 
-### 4. Agent Layer (planned)
+### 4. Agent Layer
 
 Responsible for executable user-facing object:
 
-- Binds `Model` + `ExecutionBackend`
-- Applies default request attachments
-- Executes request and returns `SessionLog`
+- `Agent(model=...)` stores a built OpenHands agent instance
+- Agent-level contexts render as a global prompt preamble
+- Supports sink execution (`request >> agent`) and returns OpenHands conversation
 
-### 5. OpenHand SDK Integration (planned)
+### 5. OpenHand SDK Integration
+
+- Direct integration with OpenHands SDK runtime primitives (`LLM`, `Conversation`, `TestLLM`)
+- No backend abstraction layer yet
 
 ## Module Dependency Graph (Runtime)
 
@@ -55,8 +59,9 @@ Type-check-only imports are used to avoid runtime cycles (e.g., `steps.py` refer
 ## Data Flow
 
 1. User composes `Request` with `>>` and `@`
-2. User renders a human-readable prompt via `Request.render()`
-3. Execution backends and agent runtimes are planned extensions
+2. User executes via sink: `request >> agent` or `request >> model`
+3. Agent renders prompt + global context preamble
+4. OpenHands conversation runs and returns execution session data
 
 ## Planned Extensions
 
@@ -65,3 +70,4 @@ Type-check-only imports are used to avoid runtime cycles (e.g., `steps.py` refer
 - Approval hooks and interactive command-line controls
 - Parallel orchestration constraints and multi-agent task graphs
 - Backend plug-ins beyond OpenHands
+- Integration test marker for real `Conversation.run()` environments

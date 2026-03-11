@@ -3,16 +3,14 @@ from __future__ import annotations
 import dataclasses
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypeAlias, Sequence, Union
+from typing import TYPE_CHECKING, Sequence, TypeAlias
 
 from pyflow.utils import coerce_step
 
 if TYPE_CHECKING:
     from pyflow.context import Context
     from pyflow.request import Request
-
-
-StepInput: TypeAlias = Union[str, "Step"]
+    from pyflow.sink import RequestSink
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -33,15 +31,20 @@ class Step(ABC):
     def __matmul__(self, attachment: Context) -> Step:
         return dataclasses.replace(self, attachments=(*self.attachments, attachment))
 
-    def __rshift__(self, rhs: StepInput) -> Request:
+    def __rshift__(self, rhs: StepInput | RequestSink) -> Request:
         from pyflow.request import Request
 
+        if not isinstance(rhs, StepInput):
+            return NotImplemented
         return Request(steps=(self, coerce_step(rhs)))
 
     def __rrshift__(self, lhs: StepInput) -> Request:
         from pyflow.request import Request
 
         return Request(steps=(coerce_step(lhs), self))
+
+
+StepInput: TypeAlias = str | Step
 
 
 @dataclass(frozen=True)

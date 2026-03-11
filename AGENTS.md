@@ -30,6 +30,8 @@ Design rule: `pyflow` remains backend-agnostic at the DSL layer, with adapters f
 
 ## Conventions
 
+- When implementing something, if the decision of how to do something is ambiguous,
+    always ask me first! Don't choose yourself!
 - Always use type annotations
 - Use `TypeVar`/`ParamSpec`/protocols where they improve API safety
 - Prefer dataclasses and abstract base classes when appropriate

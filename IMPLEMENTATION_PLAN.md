@@ -1,48 +1,47 @@
 # Implementation Plan
 
-## Phase 0: Bootstrap (completed)
+## Current Status (completed)
 
-- Initialize repository and Python package metadata
-- Create virtual environment and dependencies
-- Set up pytest baseline
-- Add initial typed DSL + backend adapter skeleton
-- Add usage examples and core docs
+- `Request` core infrastructure is implemented
+- `Agent/Model` initial implementation is implemented
 
-## Phase 1: DSL Ergonomics
+## Phase 2: Tool Abstraction Layer
 
-- Add more request examples mirroring real workflows
-- Refine operator semantics for `>>` and `@`
-- Add richer attachment primitives (skills, context scopes, exclusions)
-- Add serialization for requests (JSON/YAML)
+- Implement a Pythonic tool interface to avoid OpenHands boilerplate
+- Support function-based tools (`@tool`) and class-based tools behind a unified abstraction
+- Allow tools to be attached to both `Request` and `Agent`
+- Add adapter translation from pyflow tools to OpenHands tool registration
+- Investigate MCP-backed tool integration and reuse OpenHands MCP support where possible
 
-## Phase 2: OpenHands Integration Hardening
+## Phase 3: Execution UX (terminal-first)
 
-- Improve request-to-agent compilation rules
-- Map pyflow constraints to OpenHands hooks/policies
-- Add execution options (timeouts, retries, max iterations)
-- Add session replay helpers from `SessionLog`
+- Build Python REPL-friendly execution flow for running requests on agents
+- Add live run visibility around session events and progress
+- Introduce approval UX for tool actions once tool support lands
+- Keep behavior compatible with OpenHands conversation/event model
 
-## Phase 3: Interactive Runtime
+## Phase 4: Notebook UX
 
-- Add TUI/REPL execution shell for live progress
-- Implement tool-approval prompts and overrides
-- Add notebook-friendly streaming output adapter
+- Add notebook-first execution path for Jupyter
+- Provide notebook UI for progress/interaction (streaming + approvals), potentially via `ipywidgets`
+- Ensure parity of core execution semantics between REPL and notebook modes
 
-## Phase 4: Extensibility
+## Phase 5: IDE Autocomplete Helpers
 
-- Stabilize plugin API for custom tools/skills/context providers
-- Add pattern libraries (reusable request templates)
-- Support user-defined post-run automations (tests/commit/MR)
+- Add context/code generation helpers for file-system-aware prompt inputs
+- Enable patterns like generated typed module access (`code.folder.file`) for autocomplete
+- Extend the same generation pattern to other utility surfaces where it improves ergonomics
+- Later, consider model-endpoint-aware typed helpers once endpoint discovery is stable
 
-## Phase 5: Multi-Agent Orchestration
+## Phase 6: Advanced DSL Capabilities (later, on stable foundation)
 
-- Add parallelization constraints and scheduling strategies
-- Add parent/child request graph execution
-- Add shared context and conflict resolution policy
+- Extend request language with sub-agent creation/composition
+- Add parallel request execution semantics
+- Keep syntax concise and naturally aligned with existing `@` and `>>` operators
+- Gate this phase on a mature, tested core system
 
 ## Cross-Cutting Quality Gates
 
-- Strong typing and static checks
-- Unit tests around DSL semantics and adapters
-- Integration smoke tests (with mocked OpenHands or test models)
-- Versioned public API docs
+- Maintain strict typing (`.venv/bin/pyright`) and operator-behavior test coverage
+- Add regression tests for `@` vs `>>` precedence as DSL expands
+- Expand examples alongside each new capability to validate ergonomics

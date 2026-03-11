@@ -1,0 +1,6 @@
+Context:
+- Use documentation files: plan.md.
+- Use code files: app.py.
+
+1. Refactor the module.
+2. Before finishing, ensure tests pass: unit.

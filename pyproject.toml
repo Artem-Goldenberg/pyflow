@@ -25,6 +25,8 @@ build-backend = "hatchling.build"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 pythonpath = ["."]
+python_functions = ["test_*"]
+python_classes = ["*Tests"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["pyflow"]

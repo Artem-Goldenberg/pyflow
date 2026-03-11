@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import pyflow
 import pytest
 from pathlib import Path
-from pyflow import Request, PromptStep, code, docs
+from pyflow import PromptStep, Request, TestStep, code, docs, tests
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -19,7 +18,7 @@ def test_step_immutability_on_attachment() -> None:
 
 def test_request_immutability_on_step_append() -> None:
     base = Request(steps=(PromptStep(text="Fix the bug."),))
-    updated = base >> pyflow.tests("unit")
+    updated = base >> tests("unit")
 
     assert len(base.steps) == 1
     assert len(updated.steps) == 2
@@ -33,15 +32,15 @@ def test_prompt_attachment_operator() -> None:
 
 
 def test_prompt_rshift_tests() -> None:
-    request = "Fix the bug." >> pyflow.tests("unit")
+    request = "Fix the bug." >> tests("unit")
 
     assert len(request.steps) == 2
     assert isinstance(request.steps[0], PromptStep)
-    assert isinstance(request.steps[1], pyflow.TestStep)
+    assert isinstance(request.steps[1], TestStep)
 
 
 def test_request_matmul_attaches_first_step() -> None:
-    request = "Fix the bug." >> pyflow.tests("unit")
+    request = "Fix the bug." >> tests("unit")
     updated = request @ code("app.py")
 
     assert len(updated.steps[0].attachments) == 1
@@ -49,7 +48,7 @@ def test_request_matmul_attaches_first_step() -> None:
 
 
 def test_operator_precedence_attaches_to_test_step() -> None:
-    request = "Fix the bug." >> pyflow.tests("unit") @ docs("tests.md")
+    request = "Fix the bug." >> tests("unit") @ docs("tests.md")
 
     assert len(request.steps[1].attachments) == 1
 
@@ -62,7 +61,7 @@ def test_request_rejects_empty_steps() -> None:
 def test_request_render_basic(snapshot_regen: bool) -> None:
     request = (
         "Fix the bug." @ docs("plan.md") @ code("app.py")
-        >> pyflow.tests("unit", "integration") @ docs("tests.md")
+        >> tests("unit", "integration") @ docs("tests.md")
     )
     rendered = request.render()
 
@@ -79,7 +78,7 @@ def test_request_render_multiline(snapshot_regen: bool) -> None:
 def test_request_render_many_steps(snapshot_regen: bool) -> None:
     step_one = "First line\nSecond line" @ docs("notes.md")
     step_two = PromptStep(text="Follow up.") @ code("main.py")
-    step_three = pyflow.tests("unit", "integration")
+    step_three = tests("unit", "integration")
 
     request = step_one >> step_two >> step_three
     rendered = request.render()
