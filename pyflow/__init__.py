@@ -4,6 +4,16 @@ from pyflow.model import AIModel, Model, TestModel
 from pyflow.request import Request
 from pyflow.sink import RequestSink
 from pyflow.steps import PromptStep, Step, TestStep, tests
+from pyflow.tool import (
+    OpenHandsTool,
+    FunctionTool,
+    Tool,
+    ToolSet,
+    apply_patch_tool,
+    read_file_tool,
+    terminal_tool,
+    tool,
+)
 
 __all__ = [
     "Agent",
@@ -19,6 +29,14 @@ __all__ = [
     "PromptStep",
     "TestModel",
     "TestStep",
+    "Tool",
+    "OpenHandsTool",
+    "FunctionTool",
+    "ToolSet",
+    "terminal_tool",
+    "read_file_tool",
+    "apply_patch_tool",
+    "tool",
     "tests",
     "Request",
 ]

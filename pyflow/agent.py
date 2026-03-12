@@ -7,43 +7,36 @@ from typing import Sequence
 from openhands.sdk import Agent as OpenHandsAgent
 from openhands.sdk import Conversation
 from openhands.sdk.conversation.base import BaseConversation
-from openhands.tools import get_default_agent
 
 from pyflow.context import Context
 from pyflow.model import Model
 from pyflow.request import Request
 from pyflow.sink import RequestInput
+from pyflow.tool import (
+    Tool,
+    collect_request_tools,
+    compile_openhands_tools,
+    default_agent_tools,
+)
 from pyflow.utils import coerce_step
 
 
 @dataclass(frozen=True, kw_only=True)
 class Agent:
     """
-    Pyflow runtime sink backed by a stored OpenHands agent.
+    Pyflow runtime sink backed by a fresh OpenHands agent per run.
 
     Attributes:
         model: Pyflow model used to build an OpenHands LLM.
         contexts: Contexts rendered globally before request steps.
+        tools: Tools attached to every run unless overridden by the request.
         workspace: OpenHands workspace path for execution.
     """
 
     model: Model
     contexts: Sequence[Context] = ()
+    tools: Sequence[Tool] = field(default_factory=default_agent_tools)
     workspace: str | Path = field(default_factory=Path.cwd)
-    _openhands_agent: OpenHandsAgent = field(init=False, repr=False)
-
-    def __post_init__(self) -> None:
-        """
-        Build and store the OpenHands agent once at initialization.
-        """
-        object.__setattr__(
-            self,
-            "_openhands_agent",
-            get_default_agent(
-                llm=self.model.build_llm(),
-                cli_mode=True,
-            ),
-        )
 
     def run(self, request: Request) -> BaseConversation:
         """
@@ -56,7 +49,7 @@ class Agent:
             OpenHands base conversation for this execution.
         """
         conversation = Conversation(
-            agent=self._openhands_agent,
+            agent=self._build_openhands_agent(request),
             workspace=self.workspace,
         )
         conversation.send_message(self._render_message(request))
@@ -95,6 +88,14 @@ class Agent:
         lines.append("")
         lines.append(rendered_request)
         return "\n".join(lines)
+
+    def _build_openhands_agent(self, request: Request) -> OpenHandsAgent:
+        tool_specs = compile_openhands_tools(self.tools, collect_request_tools(request))
+        return OpenHandsAgent(
+            llm=self.model.build_llm(),
+            tools=list(tool_specs),
+            system_prompt_kwargs={"cli_mode": True},
+        )
 
 
 def _coerce_request(value: RequestInput) -> Request:

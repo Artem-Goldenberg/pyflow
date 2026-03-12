@@ -10,7 +10,7 @@ from openhands.sdk.testing import TestLLM
 from openhands.sdk.testing import TestLLMExhaustedError
 from pydantic import SecretStr
 
-from pyflow import AIModel, Agent, PromptStep, TestModel, code, docs, tests
+from pyflow import AIModel, Agent, PromptStep, Request, TestModel, code, docs, tests
 from pyflow.sink import RequestInput
 
 
@@ -78,15 +78,17 @@ def test_test_model_build_llm_uses_scripted_responses() -> None:
         llm.completion([user_message])
 
 
-def test_agent_initializes_with_test_model_llm() -> None:
+def test_agent_builds_openhands_agent_with_test_model_llm() -> None:
     model = TestModel(
         scripted_responses=(
             Message(role="assistant", content=[TextContent(text="Done")]),
         )
     )
     agent = Agent(model=model)
+    request = Request(steps=(PromptStep(text="Run the task."),))
+    openhands_agent = agent._build_openhands_agent(request)
 
-    assert isinstance(agent._openhands_agent.llm, TestLLM)
+    assert isinstance(openhands_agent.llm, TestLLM)
 
 
 def test_agent_render_message_with_context(snapshot_regen: bool) -> None:

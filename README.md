@@ -90,3 +90,7 @@ See:
 
 - OpenHands imports may emit LiteLLM network-fallback warnings in offline environments; this is expected.
 - Interactive notebook/REPL workflow is planned but not fully implemented yet.
+
+## Style Notes
+
+- For multiline function definitions, keep the closing `) -> ReturnType:` on one line when it still fits cleanly.

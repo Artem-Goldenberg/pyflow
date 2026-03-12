@@ -13,20 +13,19 @@ The framework should support:
 - Session visibility and eventually interactive intervention during execution
 - Post-run actions (tests, commit, MR/PR automation)
 
-## Current Backend Decision
-
-Primary backend is **OpenHands SDK** (`openhands-sdk` + `openhands-tools`).
-
-Design rule: `pyflow` remains backend-agnostic at the DSL layer, with adapters for runtime execution.
-
 ## Core Abstractions (Bootstrap)
 
 - `Request`: immutable composition unit (`>>` for sequencing, `@` for attachments)
 - `Agent`: executable runtime wrapper around `Model` + backend
 - `Model`: provider/model configuration and discovery helpers
-- `ToolRef` / `FunctionTool`: explicit tool references and function-based custom tools
-- `ExecutionBackend`: abstract backend interface; `OpenHandsBackend` as first implementation
-- `SessionLog`: normalized execution result payload
+
+## Project structure
+
+- `pyflow` folder contains all source files
+- `tests` contain all the test files
+- [IMPLEMENTATION_PLAN](IMPLEMENTATION_PLAN.md) contains the current plan of action and
+    completed steps
+- [ARCHITECTURE](ARCHITECTURE.md) contains high level architecture of the project
 
 ## Conventions
 
