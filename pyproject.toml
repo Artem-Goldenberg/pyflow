@@ -30,3 +30,20 @@ python_classes = ["*Tests"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["pyflow"]
+
+[tool.pyright]
+include = ["pyflow", "tests"]
+exclude = [
+    ".venv",
+    "examples",
+    "pyflow-generated",
+    "tests-generated",
+    "secrets",
+    "**/__pycache__",
+    "**/node_modules",
+    "**/.*",
+]
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "standard"
