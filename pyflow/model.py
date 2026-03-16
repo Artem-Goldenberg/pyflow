@@ -56,8 +56,10 @@ class AIModel(Model):
     """
 
     name: str
-    base_url: str
     api_key: SecretStr
+    base_url: str | None = None
+    max_input_tokens: int | None = None
+    max_output_tokens: int | None = None
 
     def build_llm(self) -> LLM:
         """
@@ -68,8 +70,10 @@ class AIModel(Model):
         """
         return LLM(
             model=self.name,
-            base_url=self.base_url,
             api_key=self.api_key,
+            base_url=self.base_url,
+            max_input_tokens=self.max_input_tokens,
+            max_output_tokens=self.max_output_tokens,
         )
 
 
