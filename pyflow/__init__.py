@@ -4,8 +4,7 @@ from pyflow.model import AIModel, Model, TestModel
 from pyflow.request import Request
 from pyflow.sink import RequestSink
 from pyflow.steps import PromptStep, Step, TestStep, tests
-from pyflow.tool import (
-    OpenHandsTool,
+from pyflow.tooling import (
     FunctionTool,
     Tool,
     ToolSet,
@@ -30,7 +29,6 @@ __all__ = [
     "TestModel",
     "TestStep",
     "Tool",
-    "OpenHandsTool",
     "FunctionTool",
     "ToolSet",
     "terminal_tool",

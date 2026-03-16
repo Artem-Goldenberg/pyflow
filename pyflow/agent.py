@@ -12,7 +12,7 @@ from pyflow.context import Context
 from pyflow.model import Model
 from pyflow.request import Request
 from pyflow.sink import RequestInput
-from pyflow.tool import (
+from pyflow.tooling import (
     Tool,
     collect_request_tools,
     compile_openhands_tools,

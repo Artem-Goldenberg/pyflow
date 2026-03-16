@@ -19,12 +19,16 @@ Responsible for request composition:
 - Step helper: `tests(...)`
 - Rendering via `Request.render()`
 
-### 2. Tool Layer (planned)
+### 2. Tool Layer (`pyflow.tooling`)
 
-Responsible for custom tool definition and normalization:
+Responsible for tool definition, composition, and OpenHands compilation:
 
-- `ToolRef` for OpenHands-compatible tool references
-- `@tool` decorator producing `FunctionTool`
+- `Tool` base context for attachable tool instructions
+- `FunctionTool` for both:
+  - local Python functions registered via `@tool`
+  - wrapped OpenHands tools created via `FunctionTool.from_openhands(...)`
+- `ToolSet` and `tool.use(...)` for immutable composition and flattening
+- compile/dedupe boundary via `compile_openhands_tools(...)`
 
 ### 3. Runtime Model Layer
 

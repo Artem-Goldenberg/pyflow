@@ -3,11 +3,11 @@ from __future__ import annotations
 import importlib
 import inspect
 import json
-from collections.abc import Iterable
 from dataclasses import dataclass, field
 from types import NoneType
-from typing import Any, Callable, Generic, ParamSpec, Sequence, TypeAlias, TypeVar, cast, get_type_hints, overload
+from typing import Any, Callable, Iterable, ParamSpec, Sequence, TypeVar, cast, get_type_hints, overload
 
+from openhands.sdk.llm import TextContent
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -18,7 +18,6 @@ from openhands.sdk.tool import (
     list_registered_tools,
     register_tool,
 )
-from openhands.sdk.llm import TextContent
 from pydantic import create_model
 
 from pyflow.context import Context
@@ -27,15 +26,27 @@ from pyflow.context import Context
 P = ParamSpec("P")
 R = TypeVar("R")
 
-_PYFLOW_TOOLS: dict[str, "FunctionTool[Any, Any]"] = {}
+_RESERVED_OPENHANDS_TOOL_NAMES: frozenset[str] = frozenset(
+    {"terminal", "read_file", "apply_patch"}
+)
+_PYFLOW_TOOLS: dict[str, "FunctionTool[..., Any]"] = {}
 
 
 class Tool(Context):
     """Common pyflow abstraction for attachable tools."""
 
+    def tool_name(self) -> str:
+        raise NotImplementedError
+
+    def identity(self) -> tuple[str, str]:
+        raise NotImplementedError
+
+    def to_openhands_spec(self) -> OpenHandsToolSpec:
+        raise NotImplementedError
+
     def render(self) -> str:
         names = _ordered_unique(
-            _tool_name(flattened_tool)
+            flattened_tool.tool_name()
             for flattened_tool in flatten_tools((self,))
         )
         noun = "tool" if len(names) == 1 else "tools"
@@ -43,31 +54,20 @@ class Tool(Context):
 
 
 @dataclass(frozen=True)
-class OpenHandsTool(Tool):
-    name: str
-    module_name: str = field(repr=False, compare=False)
-
-    def to_openhands_spec(self) -> OpenHandsToolSpec:
-        importlib.import_module(self.module_name)
-        if self.name not in list_registered_tools():
-            raise ValueError(f"OpenHands tool '{self.name}' is not registered.")
-        return OpenHandsToolSpec(name=self.name)
-
-
-@dataclass(frozen=True)
-class FunctionTool(Tool, Generic[P, R]):
-    function: Callable[P, R]
+class FunctionTool[**ToolP, ToolR](Tool):
     name: str
     description: str
-    action_type: type[Action] = field(repr=False, compare=False)
-    observation_type: type[Observation] = field(repr=False, compare=False)
-    _definition: OpenHandsToolDefinition = field(repr=False, compare=False)
-    _fingerprint: str = field(repr=False, compare=False)
-    _parameter_names: Sequence[str] = field(repr=False, compare=False)
+    function: Callable[ToolP, ToolR] | None = field(default=None, repr=False, compare=False)
+    _action_type: type[Action] | None = field(default=None, repr=False, compare=False)
+    _observation_type: type[Observation] | None = field(default=None, repr=False, compare=False)
+    _definition: OpenHandsToolDefinition | None = field(default=None, repr=False, compare=False)
+    _fingerprint: str | None = field(default=None, repr=False, compare=False)
+    _parameter_names: Sequence[str] = field(default=(), repr=False, compare=False)
+    _openhands_module_name: str | None = field(default=None, repr=False, compare=False)
 
     @classmethod
     def from_function(
-        cls,
+        cls: type[FunctionTool[P, R]],
         function: Callable[P, R],
         *,
         name: str | None = None,
@@ -128,27 +128,78 @@ class FunctionTool(Tool, Generic[P, R]):
         )
         register_tool(resolved_name, definition)
 
-        tool_instance = cls(
-            function=function,
-            name=resolved_name,
-            description=description,
-            action_type=action_type,
-            observation_type=observation_type,
-            _definition=definition,
-            _fingerprint=fingerprint,
-            _parameter_names=parameter_names,
+        tool_instance = cast(
+            FunctionTool[P, R],
+            cls(
+                name=resolved_name,
+                description=description,
+                function=function,
+                _action_type=action_type,
+                _observation_type=observation_type,
+                _definition=definition,
+                _fingerprint=fingerprint,
+                _parameter_names=parameter_names,
+            ),
         )
         _PYFLOW_TOOLS[resolved_name] = tool_instance
         return tool_instance
 
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
+    @classmethod
+    def from_openhands(
+        cls,
+        *,
+        name: str,
+        module_name: str,
+        description: str | None = None,
+    ) -> FunctionTool[..., Any]:
+        if not name.strip():
+            raise ValueError("OpenHands tool wrappers must have a non-empty name.")
+        if not module_name.strip():
+            raise ValueError("OpenHands tool wrappers must have a non-empty module name.")
+
+        return cls(
+            name=name,
+            description=description or f"OpenHands tool '{name}'.",
+            _openhands_module_name=module_name,
+        )
+
+    def __call__(self, *args: ToolP.args, **kwargs: ToolP.kwargs) -> ToolR:
+        if self.function is None:
+            raise TypeError(
+                f"Tool '{self.name}' is OpenHands-backed and cannot be called directly."
+            )
         return self.function(*args, **kwargs)
 
+    @property
+    def action_type(self) -> type[Action]:
+        if self._action_type is None:
+            raise TypeError(
+                f"Tool '{self.name}' is OpenHands-backed and does not expose an action type."
+            )
+        return self._action_type
+
+    @property
+    def observation_type(self) -> type[Observation]:
+        if self._observation_type is None:
+            raise TypeError(
+                f"Tool '{self.name}' is OpenHands-backed and does not expose an observation type."
+            )
+        return self._observation_type
+
+    def tool_name(self) -> str:
+        return self.name
+
+    def identity(self) -> tuple[str, str]:
+        if self._fingerprint is not None:
+            return ("pyflow", self._fingerprint)
+        return ("openhands", self.name)
+
     def to_openhands_spec(self) -> OpenHandsToolSpec:
+        if self._openhands_module_name is not None:
+            importlib.import_module(self._openhands_module_name)
+            if self.name not in list_registered_tools():
+                raise ValueError(f"OpenHands tool '{self.name}' is not registered.")
         return OpenHandsToolSpec(name=self.name)
-
-
-ToolLeaf: TypeAlias = OpenHandsTool | FunctionTool[Any, Any]
 
 
 @dataclass(frozen=True)
@@ -205,7 +256,7 @@ class _FunctionToolExecutor(ToolExecutor[Action, Observation]):
 
 class _ToolFactory:
     @overload
-    def __call__(self, value: str, /) -> FunctionTool[Any, Any]: ...
+    def __call__(self, value: str, /) -> FunctionTool[..., Any]: ...
 
     @overload
     def __call__(self, value: Callable[P, R], /) -> FunctionTool[P, R]: ...
@@ -234,10 +285,7 @@ class _ToolFactory:
         /,
         *,
         name: str | None = None,
-    ) -> (
-        FunctionTool[Any, Any]
-        | Callable[[Callable[..., Any]], FunctionTool[Any, Any]]
-    ):
+    ) -> FunctionTool[..., Any] | Callable[[Callable[..., Any]], FunctionTool[..., Any]]:
         if callable(value):
             return FunctionTool.from_function(value, name=name)
 
@@ -247,7 +295,8 @@ class _ToolFactory:
             return _resolve_function_tool(value)
 
         if value is None and name is not None:
-            def decorator(function: Callable[..., Any]) -> FunctionTool[Any, Any]:
+
+            def decorator(function: Callable[..., Any]) -> FunctionTool[..., Any]:
                 return FunctionTool.from_function(function, name=name)
 
             return decorator
@@ -271,16 +320,16 @@ def collect_request_tools(request: Any) -> Sequence[Tool]:
 
 
 def compile_openhands_tools(*tool_groups: Sequence[Tool]) -> Sequence[OpenHandsToolSpec]:
-    flattened: list[ToolLeaf] = []
+    flattened: list[Tool] = []
     for group in tool_groups:
         flattened.extend(flatten_tools(group))
 
-    merged: dict[str, ToolLeaf] = {}
+    merged: dict[str, Tool] = {}
     for resolved_tool in flattened:
-        name = _tool_name(resolved_tool)
+        name = resolved_tool.tool_name()
         existing = merged.get(name)
         if existing is not None:
-            if _tool_identity(existing) != _tool_identity(resolved_tool):
+            if existing.identity() != resolved_tool.identity():
                 raise ValueError(
                     f"Tool '{name}' was attached multiple times with incompatible definitions."
                 )
@@ -288,21 +337,7 @@ def compile_openhands_tools(*tool_groups: Sequence[Tool]) -> Sequence[OpenHandsT
 
         merged[name] = resolved_tool
 
-    return tuple(_to_openhands_spec(tool) for tool in merged.values())
-
-
-def _to_openhands_spec(tool: ToolLeaf) -> OpenHandsToolSpec:
-    return tool.to_openhands_spec()
-
-
-def _tool_identity(tool: ToolLeaf) -> tuple[str, str]:
-    if isinstance(tool, OpenHandsTool):
-        return ("openhands", tool.name)
-    return ("pyflow", tool._fingerprint)
-
-
-def _tool_name(tool: ToolLeaf) -> str:
-    return tool.name
+    return tuple(tool.to_openhands_spec() for tool in merged.values())
 
 
 def _build_action_type(
@@ -453,13 +488,13 @@ def _pascal_case(value: str) -> str:
     return "".join(part[:1].upper() + part[1:] for part in parts) or "Tool"
 
 
-def flatten_tools(tools: Sequence[Tool]) -> Sequence[ToolLeaf]:
-    flattened: list[ToolLeaf] = []
+def flatten_tools(tools: Sequence[Tool]) -> Sequence[Tool]:
+    flattened: list[Tool] = []
     for tool in tools:
         if isinstance(tool, ToolSet):
             flattened.extend(flatten_tools(tool.tools))
             continue
-        if isinstance(tool, (OpenHandsTool, FunctionTool)):
+        if isinstance(tool, Tool):
             flattened.append(tool)
             continue
         raise TypeError(f"Unsupported tool input: {type(tool)!r}")
@@ -539,7 +574,7 @@ def _coerce_tool(value: Tool | str) -> Tool:
     raise TypeError(f"Unsupported tool input: {type(value)!r}")
 
 
-def _resolve_function_tool(name: str) -> FunctionTool[Any, Any]:
+def _resolve_function_tool(name: str) -> FunctionTool[..., Any]:
     tool_instance = _PYFLOW_TOOLS.get(name)
     if tool_instance is not None:
         return tool_instance
@@ -552,19 +587,19 @@ def _resolve_function_tool(name: str) -> FunctionTool[Any, Any]:
 
 
 def _guard_reserved_openhands_tool_name(name: str) -> None:
-    if name in {terminal_tool.name, read_file_tool.name, apply_patch_tool.name}:
+    if name in _RESERVED_OPENHANDS_TOOL_NAMES:
         raise ValueError(f"Tool '{name}' is already registered in OpenHands.")
 
 
-terminal_tool = OpenHandsTool(
+terminal_tool = FunctionTool.from_openhands(
     name="terminal",
     module_name="openhands.tools.terminal",
 )
-read_file_tool = OpenHandsTool(
+read_file_tool = FunctionTool.from_openhands(
     name="read_file",
     module_name="openhands.tools.gemini.read_file",
 )
-apply_patch_tool = OpenHandsTool(
+apply_patch_tool = FunctionTool.from_openhands(
     name="apply_patch",
     module_name="openhands.tools.apply_patch",
 )

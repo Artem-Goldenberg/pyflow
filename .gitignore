@@ -21,3 +21,5 @@ prompt
 trash.py
 trash
 aux
+main.py
+*.plan.md

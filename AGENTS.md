@@ -37,6 +37,8 @@ The framework should support:
 - Keep modules flat and focused
 - Keep APIs immutable by default for request composition
 - Prefer `typing.Sequence` in annotations (avoid `tuple[...]` in public API)
+- Use modern generic class syntax where applicable (for example, `class Some[T]`)
+- Use `typing` types when equivalents exist (do not import from `collections.abc` for those cases)
 - Use `.venv/bin/python` and `.venv/bin/pip` for Python tooling; never call system `python`/`pip`
 - Always work and install everything inside a local `.venv`
 - In test modules, keep helper/utility functions below the tests that use them

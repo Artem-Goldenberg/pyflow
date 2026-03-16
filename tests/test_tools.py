@@ -18,6 +18,7 @@ from pyflow import (
     terminal_tool,
     tool,
 )
+from pyflow.tooling import compile_openhands_tools
 
 
 def test_tool_base_supports_leaf_and_toolset_rendering() -> None:
@@ -36,6 +37,12 @@ def test_tool_base_supports_leaf_and_toolset_rendering() -> None:
     assert tool.use("render_alpha_tool_test", "render_beta_tool_test").render() == (
         "Use tools: render_alpha_tool_test, render_beta_tool_test."
     )
+
+
+def test_builtin_openhands_tools_are_wrapped_as_function_tools() -> None:
+    assert isinstance(terminal_tool, FunctionTool)
+    assert isinstance(read_file_tool, FunctionTool)
+    assert isinstance(apply_patch_tool, FunctionTool)
 
 
 def test_tool_factory_supports_lookup_and_decorator_usage() -> None:
@@ -184,6 +191,15 @@ def test_agent_default_tools_resolve_to_terminal_read_file_and_apply_patch() -> 
     ]
 
 
+def test_builtin_openhands_tools_compile_to_expected_specs() -> None:
+    specs = compile_openhands_tools((terminal_tool, read_file_tool, apply_patch_tool))
+    assert [tool_spec.name for tool_spec in specs] == [
+        "terminal",
+        "read_file",
+        "apply_patch",
+    ]
+
+
 def test_agent_merges_agent_and_request_tools_with_safe_deduplication() -> None:
     @tool(name="merge_request_tool_test")
     def summarize_issue(issue: str) -> str:
@@ -207,6 +223,21 @@ def test_agent_merges_agent_and_request_tools_with_safe_deduplication() -> None:
         "read_file",
         "apply_patch",
     ]
+
+
+def test_compile_raises_for_same_name_with_incompatible_tool_identity() -> None:
+    @tool(name="incompatible_identity_tool_test")
+    def local_tool(value: str) -> str:
+        """Local pyflow tool."""
+        return value
+
+    wrapped_tool = FunctionTool.from_openhands(
+        name="incompatible_identity_tool_test",
+        module_name="nonexistent.module.path",
+    )
+
+    with pytest.raises(ValueError, match="incompatible definitions"):
+        compile_openhands_tools((local_tool, wrapped_tool))
 
 
 def test_unknown_named_tool_fails_early() -> None:
