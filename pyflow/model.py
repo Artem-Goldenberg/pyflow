@@ -74,6 +74,8 @@ class AIModel(Model):
             base_url=self.base_url,
             max_input_tokens=self.max_input_tokens,
             max_output_tokens=self.max_output_tokens,
+            log_completions=True,
+            log_completions_folder="logs/completions"
         )
 
 
