@@ -44,9 +44,17 @@ Responsible for executable user-facing object:
 
 - `Agent(model=...)` stores a built OpenHands agent instance
 - Agent-level contexts render as a global prompt preamble
-- Supports sink execution (`request >> agent`) and returns OpenHands conversation
+- Supports sink execution (`request >> agent`) and returns a pyflow `Session`
 
-### 5. OpenHand SDK Integration
+### 5. Session Layer (`pyflow.session`)
+
+Responsible for resumable runtime execution handles:
+
+- `Session` wraps a live OpenHands `Conversation`
+- Supports continuation sink execution (`request >> session`)
+- Exposes backend conversation access via `session.conversation`
+
+### 6. OpenHand SDK Integration
 
 - Direct integration with OpenHands SDK runtime primitives (`LLM`, `Conversation`, `TestLLM`)
 - No backend abstraction layer yet
@@ -56,7 +64,8 @@ Responsible for executable user-facing object:
 - `context.py` -> `steps.py`, `utils.py` (coercion for `@`)
 - `steps.py` -> `utils.py`
 - `request.py` -> `context.py`, `steps.py`, `utils.py`
-- `__init__.py` -> `context.py`, `steps.py`, `request.py`
+- `session.py` -> `request.py`, `sink.py`, `tooling.py`, `utils.py`
+- `__init__.py` -> `context.py`, `steps.py`, `request.py`, `session.py`
 
 Type-check-only imports are used to avoid runtime cycles (e.g., `steps.py` references `Context` only in typing).
 
@@ -65,7 +74,8 @@ Type-check-only imports are used to avoid runtime cycles (e.g., `steps.py` refer
 1. User composes `Request` with `>>` and `@`
 2. User executes via sink: `request >> agent` or `request >> model`
 3. Agent renders prompt + global context preamble
-4. OpenHands conversation runs and returns execution session data
+4. OpenHands conversation runs and returns a pyflow `Session`
+5. User can continue the same runtime via `request >> session`
 
 ## Planned Extensions
 

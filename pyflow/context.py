@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 from pyflow.steps import Step, StepInput
-from pyflow.utils import coerce_step
+from pyflow.utils import convert_to_step
 
 
 class Context(ABC):
@@ -20,7 +20,7 @@ class Context(ABC):
 
     def __rmatmul__(self, payload: StepInput) -> Step:
         """Coerce the LHS into a Step and attach this Context."""
-        return coerce_step(payload) @ self
+        return convert_to_step(payload) @ self
 
 
 @dataclass(frozen=True)

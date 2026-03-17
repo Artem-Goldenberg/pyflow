@@ -2,6 +2,7 @@ from pyflow.agent import Agent
 from pyflow.context import CodeContext, Context, DocsContext, code, docs
 from pyflow.model import AIModel, Model, TestModel
 from pyflow.request import Request
+from pyflow.session import Session
 from pyflow.sink import RequestSink
 from pyflow.steps import PromptStep, Step, TestStep, tests
 from pyflow.tooling import (
@@ -24,6 +25,7 @@ __all__ = [
     "code",
     "Model",
     "RequestSink",
+    "Session",
     "Step",
     "PromptStep",
     "TestModel",

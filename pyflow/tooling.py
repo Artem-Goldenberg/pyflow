@@ -310,15 +310,6 @@ class _ToolFactory:
 tool = _ToolFactory()
 
 
-def collect_request_tools(request: Any) -> Sequence[Tool]:
-    collected: list[Tool] = []
-    for step in request.steps:
-        for attachment in step.attachments:
-            if isinstance(attachment, Tool):
-                collected.append(attachment)
-    return tuple(collected)
-
-
 def compile_openhands_tools(*tool_groups: Sequence[Tool]) -> Sequence[OpenHandsToolSpec]:
     flattened: list[Tool] = []
     for group in tool_groups:

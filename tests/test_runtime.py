@@ -1,16 +1,28 @@
 from __future__ import annotations
 
 import pytest
+from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Sequence, cast
 
+from openhands.sdk import LLM
 from openhands.sdk.conversation.base import BaseConversation
-from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.testing import TestLLMExhaustedError
 from pydantic import SecretStr
 
-from pyflow import AIModel, Agent, PromptStep, Request, TestModel, code, docs, tests
+from pyflow import (
+    AIModel,
+    Agent,
+    Model,
+    PromptStep,
+    Session,
+    TestModel,
+    code,
+    docs,
+    tests,
+)
 from pyflow.sink import RequestInput
 
 
@@ -35,6 +47,87 @@ def test_request_rshift_sink_uses_rrshift() -> None:
 
     assert result is sink.result
     assert sink.last_input is request
+
+
+def test_request_rshift_agent_returns_session() -> None:
+    agent = _agent_with_finishes("run_one")
+
+    session = "Fix the bug." >> agent
+
+    assert isinstance(session, Session)
+    assert session.agent is agent
+
+
+def test_request_rshift_model_returns_session() -> None:
+    model = _test_model_with_finishes("run_one")
+
+    session = "Fix the bug." >> model
+
+    assert isinstance(session, Session)
+
+
+def test_step_rshift_agent_and_model_return_session() -> None:
+    step = PromptStep(text="Fix the bug.")
+
+    agent_session = step >> _agent_with_finishes("agent_run")
+    model_session = step >> _test_model_with_finishes("model_run")
+
+    assert isinstance(agent_session, Session)
+    assert isinstance(model_session, Session)
+
+
+def test_request_rshift_session_reuses_same_session() -> None:
+    agent = _agent_with_finishes("first_run", "second_run")
+    session = "Inspect the parser design." >> agent
+
+    returned = "Now refactor only the tokenizer part." >> session
+
+    assert returned is session
+    assert returned.conversation is session.conversation
+
+
+def test_step_rshift_session_coerces_through_continuation_path() -> None:
+    agent = _agent_with_finishes("first_run", "second_run")
+    session = "Inspect the parser design." >> agent
+
+    returned = PromptStep(text="Now refactor only the tokenizer part.") >> session
+
+    assert returned is session
+    assert returned.conversation is session.conversation
+
+
+def test_session_continuation_does_not_build_fresh_llm() -> None:
+    model = CountingModel(
+        scripted_responses=(
+            _finish_message("first_run"),
+            _finish_message("second_run"),
+        )
+    )
+    agent = Agent(model=model, tools=())
+
+    session = "Do the first pass." >> agent
+    _ = "Do the second pass." >> session
+
+    assert isinstance(session, Session)
+    assert model.build_llm_calls == 1
+
+
+def test_session_continuation_appends_plain_request_without_global_context() -> None:
+    agent = Agent(
+        model=_test_model_with_finishes("unused"),
+        contexts=(docs("plan.md"),),
+    )
+    conversation = CaptureConversation()
+    session = Session(
+        agent=agent,
+        conversation=cast(BaseConversation, conversation),
+    )
+
+    returned = "Follow up change." >> session
+
+    assert returned is session
+    assert conversation.messages == ["1. Follow up change."]
+    assert conversation.run_calls == 1
 
 
 def test_ai_model_build_llm_maps_fields() -> None:
@@ -84,9 +177,9 @@ def test_agent_builds_openhands_agent_with_test_model_llm() -> None:
             Message(role="assistant", content=[TextContent(text="Done")]),
         )
     )
-    agent = Agent(model=model)
-    request = Request(steps=(PromptStep(text="Run the task."),))
-    openhands_agent = agent._build_openhands_agent(request)
+    # This test verifies LLM wiring, not built-in tool wiring.
+    agent = Agent(model=model, tools=())
+    openhands_agent = agent._build_openhands_agent()
 
     assert isinstance(openhands_agent.llm, TestLLM)
 
@@ -116,6 +209,48 @@ def test_agent_workspace_defaults_to_cwd() -> None:
     assert agent.workspace == Path.cwd()
 
 
+@dataclass(frozen=True, kw_only=True)
+class CountingModel(Model):
+    scripted_responses: Sequence[Message | Exception]
+    name: str = "counting-test-model"
+    build_llm_calls: int = 0
+
+    def build_llm(self) -> LLM:
+        object.__setattr__(self, "build_llm_calls", self.build_llm_calls + 1)
+        return TestLLM.from_messages(
+            messages=list(self.scripted_responses),
+            model=self.name,
+        )
+
+
+class CaptureSink:
+    result: Session
+    last_input: RequestInput | None
+
+    def __init__(self) -> None:
+        self.result = cast(Session, object())
+        self.last_input = None
+
+    def __rrshift__(self, lhs: RequestInput) -> Session:
+        self.last_input = lhs
+        return self.result
+
+
+class CaptureConversation:
+    messages: list[str]
+    run_calls: int
+
+    def __init__(self) -> None:
+        self.messages = []
+        self.run_calls = 0
+
+    def send_message(self, text: str) -> None:
+        self.messages.append(text)
+
+    def run(self) -> None:
+        self.run_calls += 1
+
+
 def assert_snapshot(name: str, content: str, regen: bool) -> None:
     path = FIXTURES_DIR / f"{name}.txt"
     if regen:
@@ -133,14 +268,26 @@ def _content_as_text(message: Message) -> str:
     return "\n".join(parts)
 
 
-class CaptureSink:
-    result: BaseConversation
-    last_input: RequestInput | None
+def _test_model_with_finishes(*call_ids: str) -> TestModel:
+    return TestModel(scripted_responses=tuple(_finish_message(call_id) for call_id in call_ids))
 
-    def __init__(self) -> None:
-        self.result = cast(BaseConversation, object())
-        self.last_input = None
 
-    def __rrshift__(self, lhs: RequestInput) -> BaseConversation:
-        self.last_input = lhs
-        return self.result
+def _agent_with_finishes(*call_ids: str) -> Agent:
+    # Most runtime tests do not exercise built-in OpenHands tools. Using no tools
+    # avoids terminal bootstrap overhead in each Conversation.run() call.
+    return Agent(model=_test_model_with_finishes(*call_ids), tools=())
+
+
+def _finish_message(call_id: str, message: str = "Done") -> Message:
+    return Message(
+        role="assistant",
+        content=[TextContent(text="")],
+        tool_calls=[
+            MessageToolCall(
+                id=call_id,
+                name="finish",
+                arguments='{"message": "' + message + '"}',
+                origin="completion",
+            )
+        ],
+    )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from typing import Any, cast
 
 from openhands.sdk import Observation
 from openhands.sdk.event import ActionEvent, ObservationEvent
@@ -11,6 +12,7 @@ from pyflow import (
     FunctionTool,
     PromptStep,
     Request,
+    Session,
     TestModel,
     ToolSet,
     apply_patch_tool,
@@ -182,7 +184,7 @@ def test_request_attachment_operator_accepts_tools() -> None:
 
 def test_agent_default_tools_resolve_to_terminal_read_file_and_apply_patch() -> None:
     agent = Agent(model=_empty_test_model())
-    openhands_agent = agent._build_openhands_agent(_prompt_request("Inspect the workspace."))
+    openhands_agent = agent._build_openhands_agent()
 
     assert [tool_spec.name for tool_spec in openhands_agent.tools] == [
         "terminal",
@@ -200,7 +202,7 @@ def test_builtin_openhands_tools_compile_to_expected_specs() -> None:
     ]
 
 
-def test_agent_merges_agent_and_request_tools_with_safe_deduplication() -> None:
+def test_agent_uses_only_agent_tools_for_runtime_registration() -> None:
     @tool(name="merge_request_tool_test")
     def summarize_issue(issue: str) -> str:
         """Summarize an issue string."""
@@ -215,13 +217,15 @@ def test_agent_merges_agent_and_request_tools_with_safe_deduplication() -> None:
             ("Fix this." @ tool("merge_request_tool_test") @ read_file_tool @ apply_patch_tool),
         )
     )
-    openhands_agent = agent._build_openhands_agent(request)
+    rendered_request = request.render()
+    assert "Use tool: merge_request_tool_test." in rendered_request
+    assert "Use tool: read_file." in rendered_request
+    assert "Use tool: apply_patch." in rendered_request
+    openhands_agent = agent._build_openhands_agent()
 
     assert [tool_spec.name for tool_spec in openhands_agent.tools] == [
         "terminal",
         "merge_request_tool_test",
-        "read_file",
-        "apply_patch",
     ]
 
 
@@ -265,32 +269,24 @@ def test_function_tool_executes_via_openhands_tool_loop() -> None:
                     )
                 ],
             ),
-            Message(
-                role="assistant",
-                content=[TextContent(text="")],
-                tool_calls=[
-                    MessageToolCall(
-                        id="call_finish",
-                        name="finish",
-                        arguments='{"message": "Done"}',
-                        origin="completion",
-                    )
-                ],
-            ),
+            _finish_message("call_finish"),
         )
     )
     agent = Agent(model=model, tools=(add_numbers,))
-    conversation = agent.run(_prompt_request("Add the numbers."))
+    session = agent.run(_prompt_request("Add the numbers."))
+
+    assert isinstance(session, Session)
+    events = cast(Any, session.conversation).state.events
 
     action_event = next(
         event
-        for event in conversation.state.events
+        for event in events
         if isinstance(event, ActionEvent)
         and event.tool_name == "execute_add_numbers_tool_test"
     )
     observation_event = next(
         event
-        for event in conversation.state.events
+        for event in events
         if isinstance(event, ObservationEvent)
         and event.tool_name == "execute_add_numbers_tool_test"
     )
@@ -300,12 +296,49 @@ def test_function_tool_executes_via_openhands_tool_loop() -> None:
     assert observation_event.observation.text == "3"
 
 
+def test_session_continuation_does_not_register_request_attached_tools() -> None:
+    @tool(name="session_attachment_is_prompt_only_tool_test")
+    def passthrough(value: str) -> str:
+        """Return the provided text unchanged."""
+        return value
+
+    model = TestModel(
+        scripted_responses=(
+            _finish_message("first_run"),
+            _finish_message("second_run"),
+        )
+    )
+
+    # Built-in tools are irrelevant here; skip them to keep continuation tests fast.
+    session = "Start a session." >> Agent(model=model, tools=())
+    _ = ("This attachment is prompt-only." @ passthrough) >> session
+
+    tool_names = [tool_spec.name for tool_spec in cast(Any, session.conversation).agent.tools]
+
+    assert "session_attachment_is_prompt_only_tool_test" not in tool_names
+
+
 def _empty_test_model() -> TestModel:
     return TestModel(scripted_responses=())
 
 
 def _prompt_request(text: str) -> Request:
     return Request(steps=(PromptStep(text=text),))
+
+
+def _finish_message(call_id: str, message: str = "Done") -> Message:
+    return Message(
+        role="assistant",
+        content=[TextContent(text="")],
+        tool_calls=[
+            MessageToolCall(
+                id=call_id,
+                name="finish",
+                arguments='{"message": "' + message + '"}',
+                origin="completion",
+            )
+        ],
+    )
 
 
 class _EchoObservation(Observation):

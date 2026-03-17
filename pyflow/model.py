@@ -5,11 +5,11 @@ from dataclasses import dataclass
 from typing import Sequence
 
 from openhands.sdk import LLM
-from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.llm import Message
 from openhands.sdk.testing import TestLLM
 from pydantic import SecretStr
 
+from pyflow.session import Session
 from pyflow.sink import RequestInput
 
 
@@ -29,7 +29,7 @@ class Model(ABC):
         """
         raise NotImplementedError
 
-    def __rrshift__(self, lhs: RequestInput) -> BaseConversation:
+    def __rrshift__(self, lhs: RequestInput) -> Session:
         """
         Execute request-like input directly against this model via ``>>``.
 
@@ -37,7 +37,7 @@ class Model(ABC):
             lhs: Request-like input (``Request`` or single-step input).
 
         Returns:
-            OpenHands conversation produced by the run.
+            Pyflow session wrapper produced by the run.
         """
         from pyflow.agent import Agent
 
@@ -75,7 +75,7 @@ class AIModel(Model):
             max_input_tokens=self.max_input_tokens,
             max_output_tokens=self.max_output_tokens,
             log_completions=True,
-            log_completions_folder="logs/completions"
+            log_completions_folder="logs/completions",
         )
 
 

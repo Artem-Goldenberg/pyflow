@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING, Sequence, overload
 
 from pyflow.context import Context
 from pyflow.steps import Step, StepInput
-from pyflow.utils import coerce_step, indent_multiline
+from pyflow.utils import convert_to_step, indent_multiline
 
 if TYPE_CHECKING:
+    from pyflow.session import Session
     from pyflow.sink import RequestSink
 
 
@@ -19,10 +20,16 @@ class Request:
         if not self.steps:
             raise ValueError("Request.steps must be non-empty.")
 
-    def __rshift__(self, rhs: StepInput | RequestSink) -> Request:
+    @overload
+    def __rshift__(self, rhs: StepInput) -> Request: ...
+
+    @overload
+    def __rshift__(self, rhs: RequestSink) -> Session: ...
+
+    def __rshift__(self, rhs: object) -> Request | Session:
         if not isinstance(rhs, StepInput):
             return NotImplemented
-        return Request(steps=(*self.steps, coerce_step(rhs)))
+        return Request(steps=(*self.steps, convert_to_step(rhs)))
 
     def __matmul__(self, attachment: Context) -> Request:
         first, rest = self.steps[0], self.steps[1:]

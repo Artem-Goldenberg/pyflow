@@ -10,8 +10,8 @@ Early bootstrap stage. The repository now contains:
 
 - Immutable request DSL core (`Request`, `Step`, `Context`) with `>>` and `@`
 - File context helpers (`docs`, `code`) and test steps (`tests`)
-- Runtime sink layer (`Agent`, abstract `Model`, `AIModel`, `TestModel`)
-- OpenHands execution wiring with conversation return values
+- Runtime sink layer (`Agent`, `Session`, abstract `Model`, `AIModel`, `TestModel`)
+- OpenHands execution wiring with resumable session return values
 - Offline model testing path via OpenHands `TestLLM`
 - Architecture/implementation docs
 - OpenHands usage examples (raw SDK)
@@ -53,7 +53,9 @@ model = AIModel(
     api_key=SecretStr("..."),
 )
 agent = Agent(model=model)
-conversation = request >> agent
+session = request >> agent
+session = "Apply only targeted follow-up changes." >> session
+raw_conversation = session.conversation
 ```
 
 ## Offline Runtime Tests

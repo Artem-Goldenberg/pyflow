@@ -11,14 +11,10 @@ from openhands.sdk.conversation.base import BaseConversation
 from pyflow.context import Context
 from pyflow.model import Model
 from pyflow.request import Request
+from pyflow.session import Session
 from pyflow.sink import RequestInput
-from pyflow.tooling import (
-    Tool,
-    collect_request_tools,
-    compile_openhands_tools,
-    default_agent_tools,
-)
-from pyflow.utils import coerce_step
+from pyflow.tooling import Tool, compile_openhands_tools, default_agent_tools
+from pyflow.utils import convert_to_request
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -29,7 +25,7 @@ class Agent:
     Attributes:
         model: Pyflow model used to build an OpenHands LLM.
         contexts: Contexts rendered globally before request steps.
-        tools: Tools attached to every run unless overridden by the request.
+        tools: Tools attached to every run.
         workspace: OpenHands workspace path for execution.
     """
 
@@ -38,25 +34,25 @@ class Agent:
     tools: Sequence[Tool] = field(default_factory=default_agent_tools)
     workspace: str | Path = field(default_factory=Path.cwd)
 
-    def run(self, request: Request) -> BaseConversation:
+    def run(self, request: Request) -> Session:
         """
-        Execute a request and return the OpenHands conversation.
+        Execute a request and return a pyflow session.
 
         Args:
             request: Request to execute.
 
         Returns:
-            OpenHands base conversation for this execution.
+            Pyflow session wrapper for this execution.
         """
         conversation = Conversation(
-            agent=self._build_openhands_agent(request),
+            agent=self._build_openhands_agent(),
             workspace=self.workspace,
         )
-        conversation.send_message(self._render_message(request))
+        self.append_message(conversation, request, include_global_context=True)
         conversation.run()
-        return conversation
+        return Session(agent=self, conversation=conversation)
 
-    def __rrshift__(self, lhs: RequestInput) -> BaseConversation:
+    def __rrshift__(self, lhs: RequestInput) -> Session:
         """
         Execute request-like input via ``>>``.
 
@@ -64,9 +60,22 @@ class Agent:
             lhs: Request-like input (``Request`` or single-step input).
 
         Returns:
-            OpenHands base conversation for this execution.
+            Pyflow session wrapper for this execution.
         """
-        return self.run(_coerce_request(lhs))
+        return self.run(convert_to_request(lhs))
+
+    def append_message(
+        self,
+        conversation: BaseConversation,
+        request: Request,
+        *,
+        include_global_context: bool = False,
+    ) -> None:
+        """Append a request message to an existing conversation."""
+        message = request.render()
+        if include_global_context:
+            message = self._render_message(request)
+        conversation.send_message(message)
 
     def _render_message(self, request: Request) -> str:
         """
@@ -89,25 +98,10 @@ class Agent:
         lines.append(rendered_request)
         return "\n".join(lines)
 
-    def _build_openhands_agent(self, request: Request) -> OpenHandsAgent:
-        tool_specs = compile_openhands_tools(self.tools, collect_request_tools(request))
+    def _build_openhands_agent(self) -> OpenHandsAgent:
+        tool_specs = compile_openhands_tools(self.tools)
         return OpenHandsAgent(
             llm=self.model.build_llm(),
             tools=list(tool_specs),
             system_prompt_kwargs={"cli_mode": True},
         )
-
-
-def _coerce_request(value: RequestInput) -> Request:
-    """
-    Normalize request-like input into a ``Request``.
-
-    Args:
-        value: Request-like input (``Request`` or single-step input).
-
-    Returns:
-        Request representation of the provided input.
-    """
-    if isinstance(value, Request):
-        return value
-    return Request(steps=(coerce_step(value),))
