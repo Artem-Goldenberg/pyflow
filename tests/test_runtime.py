@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import pytest
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,10 +12,12 @@ from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.testing import TestLLMExhaustedError
 from pydantic import SecretStr
+from rich.console import Console
 
 from pyflow import (
     AIModel,
     Agent,
+    DisplayEnvironment,
     Model,
     PromptStep,
     Session,
@@ -22,6 +25,7 @@ from pyflow import (
     code,
     docs,
     tests,
+    tool,
 )
 from pyflow.sink import RequestInput
 
@@ -128,6 +132,51 @@ def test_session_continuation_appends_plain_request_without_global_context() -> 
     assert returned is session
     assert conversation.messages == ["1. Follow up change."]
     assert conversation.run_calls == 1
+
+
+def test_session_str_renders_chat_transcript_with_tool_activity(
+    snapshot_regen: bool,
+) -> None:
+    session = _session_with_rendered_tool_activity()
+
+    assert_snapshot("session_chat_transcript", str(session), snapshot_regen)
+
+
+def test_session_repr_matches_chat_transcript_in_interactive_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    snapshot_regen: bool,
+) -> None:
+    session = _session_with_rendered_tool_activity()
+    monkeypatch.setattr(
+        "pyflow.session.detect_display_environment",
+        lambda: DisplayEnvironment.PYTHON_REPL,
+    )
+
+    assert_snapshot("session_chat_transcript", repr(session), snapshot_regen)
+
+
+def test_session_repr_uses_python_object_style_in_common_cli() -> None:
+    agent = Agent(model=_test_model_with_finishes("unused"), tools=())
+    session = Session(
+        agent=agent,
+        conversation=cast(BaseConversation, CaptureConversation()),
+    )
+
+    assert repr(session).startswith("Session(agent=Agent(")
+    assert "conversation=CaptureConversation()" in repr(session)
+
+
+def test_session_rich_rendering_uses_snapshot(snapshot_regen: bool) -> None:
+    session = _session_with_rendered_tool_activity()
+    console = Console(record=True, width=100, file=io.StringIO())
+
+    console.print(session)
+
+    assert_snapshot(
+        "session_rich_transcript",
+        console.export_text(),
+        snapshot_regen,
+    )
 
 
 def test_ai_model_build_llm_maps_fields() -> None:
@@ -250,6 +299,9 @@ class CaptureConversation:
     def run(self) -> None:
         self.run_calls += 1
 
+    def __repr__(self) -> str:
+        return "CaptureConversation()"
+
 
 def assert_snapshot(name: str, content: str, regen: bool) -> None:
     path = FIXTURES_DIR / f"{name}.txt"
@@ -257,7 +309,7 @@ def assert_snapshot(name: str, content: str, regen: bool) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
     expected = path.read_text(encoding="utf-8")
-    assert content == expected
+    assert content.rstrip("\n") == expected.rstrip("\n")
 
 
 def _content_as_text(message: Message) -> str:
@@ -276,6 +328,33 @@ def _agent_with_finishes(*call_ids: str) -> Agent:
     # Most runtime tests do not exercise built-in OpenHands tools. Using no tools
     # avoids terminal bootstrap overhead in each Conversation.run() call.
     return Agent(model=_test_model_with_finishes(*call_ids), tools=())
+
+
+def _session_with_rendered_tool_activity() -> Session:
+    model = TestModel(
+        scripted_responses=(
+            Message(
+                role="assistant",
+                content=[TextContent(text="I will add the numbers.")],
+                tool_calls=[
+                    MessageToolCall(
+                        id="call_add",
+                        name="session_render_sum_tool_test",
+                        arguments='{"a": 1, "b": 2}',
+                        origin="completion",
+                    )
+                ],
+            ),
+            _finish_message("call_finish"),
+        )
+    )
+    return "Add 1 and 2." >> Agent(model=model, tools=(_session_render_sum_tool,))
+
+
+@tool(name="session_render_sum_tool_test")
+def _session_render_sum_tool(a: int, b: int) -> int:
+    """Add two numbers for transcript rendering."""
+    return a + b
 
 
 def _finish_message(call_id: str, message: str = "Done") -> Message:

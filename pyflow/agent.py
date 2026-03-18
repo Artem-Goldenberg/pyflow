@@ -9,6 +9,7 @@ from openhands.sdk import Conversation
 from openhands.sdk.conversation.base import BaseConversation
 
 from pyflow.context import Context
+from pyflow.display import mark_live_repl_value
 from pyflow.model import Model
 from pyflow.request import Request
 from pyflow.session import Session
@@ -50,7 +51,9 @@ class Agent:
         )
         self.append_message(conversation, request, include_global_context=True)
         conversation.run()
-        return Session(agent=self, conversation=conversation)
+        session = Session(agent=self, conversation=conversation)
+        mark_live_repl_value(session)
+        return session
 
     def __rrshift__(self, lhs: RequestInput) -> Session:
         """

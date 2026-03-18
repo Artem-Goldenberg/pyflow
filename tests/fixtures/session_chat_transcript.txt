@@ -1,0 +1,22 @@
+User:
+  1. Add 1 and 2.
+
+Agent:
+  I will add the numbers.
+  Tool Call: session_render_sum_tool_test
+    Arguments:
+      {
+        "a": 1,
+        "b": 2
+      }
+    Result:
+      3
+
+Agent:
+  Tool Call: finish
+    Arguments:
+      {
+        "message": "Done"
+      }
+    Result:
+      Done

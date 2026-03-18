@@ -1,5 +1,10 @@
 from pyflow.agent import Agent
 from pyflow.context import CodeContext, Context, DocsContext, code, docs
+from pyflow.display import (
+    DisplayEnvironment,
+    detect_display_environment,
+    install_rich_pretty,
+)
 from pyflow.model import AIModel, Model, TestModel
 from pyflow.request import Request
 from pyflow.session import Session
@@ -23,8 +28,11 @@ __all__ = [
     "Context",
     "DocsContext",
     "CodeContext",
+    "DisplayEnvironment",
     "docs",
     "code",
+    "detect_display_environment",
+    "install_rich_pretty",
     "Model",
     "RequestSink",
     "Session",
