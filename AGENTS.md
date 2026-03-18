@@ -39,6 +39,7 @@ The framework should support:
 - In DSL expressions that use `@` and `>>`, avoid unnecessary parentheses and keep expressions as bare as possible
 - Prefer `typing.Sequence` in annotations (avoid `tuple[...]` in public API)
 - Use modern generic class syntax where applicable (for example, `class Some[T]`)
+- Prefer modern f-strings over string concatenation or `.format(...)` for interpolation
 - Use `typing` types when equivalents exist (do not import from `collections.abc` for those cases)
 - For dunder operators returning `NotImplemented`, do not include `NotImplementedType` in return annotations
 - Use `.venv/bin/python` and `.venv/bin/pip` for Python tooling; never call system `python`/`pip`

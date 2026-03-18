@@ -25,10 +25,10 @@ Responsible for tool definition, composition, and OpenHands compilation:
 
 - `Tool` base context for attachable tool instructions
 - `FunctionTool` for both:
-  - local Python functions registered via `@tool`
-  - wrapped OpenHands tools created via `FunctionTool.from_openhands(...)`
+  - local Python functions registered via `@tool`, where the latest registration wins by name
+  - wrapped OpenHands tools created via `FunctionTool.from_openhands(...)`, which eagerly imports and registers the underlying OpenHands tool
 - `ToolSet` and `tool.use(...)` for immutable composition and flattening
-- compile/dedupe boundary via `compile_openhands_tools(...)`
+- compile boundary via `compile_openhands_tools(...)`, which keeps the last attached tool for each name
 
 ### 3. Runtime Model Layer
 

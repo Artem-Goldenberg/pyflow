@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import importlib
+import logging
+
 import pytest
-from typing import Any, cast
+
+from pathlib import Path
+from typing import Annotated, Any, cast
 
 from openhands.sdk import Observation
 from openhands.sdk.event import ActionEvent, ObservationEvent
@@ -60,6 +65,13 @@ def test_tool_factory_supports_lookup_and_decorator_usage() -> None:
     assert count_letters.name == "count_letters_tool_test"
 
 
+def test_tool_factory_supports_lookup_for_openhands_wrapped_tools() -> None:
+    looked_up = tool("read_file")
+
+    assert looked_up.name == "read_file"
+    assert looked_up is read_file_tool
+
+
 def test_tool_use_flattens_nested_toolsets() -> None:
     @tool(name="toolset_one_tool_test")
     def first(value: str) -> str:
@@ -106,6 +118,18 @@ def test_function_tool_maps_docstring_and_signature_to_schema() -> None:
     assert observation_fields["result"].annotation == list[str]
 
 
+def test_function_tool_preserves_annotated_parameter_metadata() -> None:
+    @tool(name="annotated_parameter_tool_test")
+    def annotate(value: Annotated[int, "positive"]) -> str:
+        """Expose annotated metadata in the generated action schema."""
+        return str(value)
+
+    field_info = annotate.action_type.model_fields["value"]
+
+    assert field_info.annotation is int
+    assert field_info.metadata == ["positive"]
+
+
 def test_function_tool_uses_observation_return_annotation_directly() -> None:
     @tool(name="echo_observation_tool_test")
     def echo_text(text: str) -> _EchoObservation:
@@ -145,16 +169,9 @@ def test_function_tool_rejects_varargs_signature() -> None:
         tool(name="bad_varargs_tool_test")(bad_varargs)
 
 
-def test_function_tool_conflict_with_openhands_name_raises_immediately() -> None:
-    def conflict(command: str) -> str:
-        """Conflicts with the built-in terminal tool."""
-        return command
-
-    with pytest.raises(ValueError, match="already registered in OpenHands"):
-        tool(name="terminal")(conflict)
-
-
-def test_function_tool_conflict_with_existing_pyflow_name_raises_immediately() -> None:
+def test_function_tool_redefinition_warns_and_replaces_existing_definition(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     @tool(name="duplicate_pyflow_tool_test")
     def first(value: int) -> int:
         """First definition."""
@@ -162,12 +179,50 @@ def test_function_tool_conflict_with_existing_pyflow_name_raises_immediately() -
 
     assert isinstance(first, FunctionTool)
 
+    caplog.set_level(logging.WARNING, logger="pyflow.tooling")
+
+    @tool(name="duplicate_pyflow_tool_test")
     def second(value: str) -> str:
         """Second definition."""
         return value
 
-    with pytest.raises(ValueError, match="different definition"):
-        tool(name="duplicate_pyflow_tool_test")(second)
+    looked_up = tool("duplicate_pyflow_tool_test")
+
+    assert looked_up is second
+    assert second.action_type.model_fields["value"].annotation is str
+    assert second("value") == "value"
+    assert "Replacing tool 'duplicate_pyflow_tool_test'" in caplog.text
+
+
+def test_function_tool_can_replace_existing_openhands_tool_name(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="pyflow.tooling")
+
+    tool_name = "wrapped_conflict_tool_test"
+    module_name = _write_openhands_tool_module(
+        tmp_path,
+        module_name="wrapped_conflict_tool_module",
+        tool_name=tool_name,
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+
+    wrapped_tool = FunctionTool.from_openhands(
+        name=tool_name,
+        module_name=module_name,
+    )
+
+    @tool(name=tool_name)
+    def conflict(value: str) -> str:
+        """Replace an imported OpenHands-backed tool."""
+        return f"custom:{value}"
+
+    assert wrapped_tool.name == tool_name
+    assert tool(tool_name) is conflict
+    assert "Replacing tool 'wrapped_conflict_tool_test'" in caplog.text
 
 
 def test_request_attachment_operator_accepts_tools() -> None:
@@ -229,23 +284,24 @@ def test_agent_uses_only_agent_tools_for_runtime_registration() -> None:
     ]
 
 
-def test_compile_raises_for_same_name_with_incompatible_tool_identity() -> None:
-    @tool(name="incompatible_identity_tool_test")
-    def local_tool(value: str) -> str:
-        """Local pyflow tool."""
+def test_compile_keeps_last_tool_for_duplicate_names() -> None:
+    @tool(name="duplicate_compile_tool_test")
+    def first(value: int) -> int:
+        """First definition."""
         return value
 
-    wrapped_tool = FunctionTool.from_openhands(
-        name="incompatible_identity_tool_test",
-        module_name="nonexistent.module.path",
-    )
+    @tool(name="duplicate_compile_tool_test")
+    def second(value: str) -> str:
+        """Second definition."""
+        return value
 
-    with pytest.raises(ValueError, match="incompatible definitions"):
-        compile_openhands_tools((local_tool, wrapped_tool))
+    specs = compile_openhands_tools((first, second))
+
+    assert [tool_spec.name for tool_spec in specs] == ["duplicate_compile_tool_test"]
 
 
 def test_unknown_named_tool_fails_early() -> None:
-    with pytest.raises(ValueError, match="Unknown pyflow tool"):
+    with pytest.raises(ValueError, match="Unknown tool"):
         tool("definitely_unknown_tool_test")
 
 
@@ -334,7 +390,7 @@ def _finish_message(call_id: str, message: str = "Done") -> Message:
             MessageToolCall(
                 id=call_id,
                 name="finish",
-                arguments='{"message": "' + message + '"}',
+                arguments=f'{{"message": "{message}"}}',
                 origin="completion",
             )
         ],
@@ -343,3 +399,85 @@ def _finish_message(call_id: str, message: str = "Done") -> Message:
 
 class _EchoObservation(Observation):
     echoed: str
+
+
+def _write_openhands_tool_module(
+    tmp_path: Path,
+    *,
+    module_name: str,
+    tool_name: str,
+) -> str:
+    module_path = tmp_path / f"{module_name}.py"
+    module_path.write_text(
+        "\n".join(
+            (
+                "from pydantic import create_model",
+                "from openhands.sdk.llm import TextContent",
+                "from openhands.sdk.tool import (",
+                "    Action,",
+                "    Observation,",
+                "    ToolAnnotations,",
+                "    ToolDefinition,",
+                "    ToolExecutor,",
+                "    register_tool,",
+                ")",
+                "",
+                f"TOOL_NAME = {tool_name!r}",
+                "ImportedWrappedConflictAction = create_model(",
+                "    'ImportedWrappedConflictAction',",
+                "    __base__=Action,",
+                "    __module__=__name__,",
+                "    value=(str, ...),",
+                ")",
+                "ImportedWrappedConflictObservation = create_model(",
+                "    'ImportedWrappedConflictObservation',",
+                "    __base__=Observation,",
+                "    __module__=__name__,",
+                "    result=(str, ...),",
+                ")",
+                "",
+                "class _Executor(ToolExecutor[Action, Observation]):",
+                "    def __call__(self, action: Action, conversation=None) -> Observation:",
+                "        return ImportedWrappedConflictObservation.model_validate(",
+                "            {",
+                "                'result': action.value,",
+                "                'content': [TextContent(text=action.value)],",
+                "            }",
+                "        )",
+                "",
+                "def _unsupported_create(cls, conv_state=None, **params):",
+                "    if params:",
+                "        raise ValueError('Temporary wrapped tool does not accept params.')",
+                "    raise NotImplementedError('Temporary wrapped tool is a fixed instance.')",
+                "",
+                "WrappedConflictToolDefinition = type(",
+                "    'WrappedConflictToolDefinition',",
+                "    (ToolDefinition,),",
+                "    {",
+                "        '__module__': __name__,",
+                "        'name': TOOL_NAME,",
+                "        'create': classmethod(_unsupported_create),",
+                "    },",
+                ")",
+                "",
+                "register_tool(",
+                "    TOOL_NAME,",
+                "    WrappedConflictToolDefinition(",
+                "        description='Temporary wrapped tool.',",
+                "        action_type=ImportedWrappedConflictAction,",
+                "        observation_type=ImportedWrappedConflictObservation,",
+                "        annotations=ToolAnnotations(",
+                "            title=TOOL_NAME,",
+                "            readOnlyHint=False,",
+                "            destructiveHint=False,",
+                "            idempotentHint=True,",
+                "            openWorldHint=False,",
+                "        ),",
+                "        executor=_Executor(),",
+                "    ),",
+                ")",
+            )
+        )
+        + "\n"
+    )
+    return module_name

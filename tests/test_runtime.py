@@ -286,7 +286,7 @@ def _finish_message(call_id: str, message: str = "Done") -> Message:
             MessageToolCall(
                 id=call_id,
                 name="finish",
-                arguments='{"message": "' + message + '"}',
+                arguments=f'{{"message": "{message}"}}',
                 origin="completion",
             )
         ],
