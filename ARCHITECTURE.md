@@ -27,7 +27,7 @@ Responsible for tool definition, composition, and OpenHands compilation:
 - `FunctionTool` for both:
   - local Python functions registered via `@tool`, where the latest registration wins by name
   - wrapped OpenHands tools created via `FunctionTool.from_openhands(...)`, which eagerly imports and registers the underlying OpenHands tool
-- `ToolSet` and `tool.use(...)` for immutable composition and flattening
+- `ToolSet` and `tools(...)` for immutable composition and lookup-driven flattening
 - compile boundary via `compile_openhands_tools(...)`, which keeps the last attached tool for each name
 
 ### 3. Runtime Model Layer

@@ -55,7 +55,7 @@ Sort imports in this order:
 
 ## Testing
 
-- Use `pytest`
+- Use `.venv/bin/pytest`
 - Always run `.venv/bin/pyright` to check type errors after Python changes
 - Cover DSL operator behavior, typing-sensitive logic, and backend compilation boundaries
 - Add regression tests for operator precedence edge cases (`@` vs `>>`)

@@ -8,11 +8,13 @@ from pyflow.steps import PromptStep, Step, TestStep, tests
 from pyflow.tooling import (
     FunctionTool,
     Tool,
+    ToolContext,
     ToolSet,
     apply_patch_tool,
     read_file_tool,
     terminal_tool,
     tool,
+    tools,
 )
 
 __all__ = [
@@ -32,11 +34,13 @@ __all__ = [
     "TestStep",
     "Tool",
     "FunctionTool",
+    "ToolContext",
     "ToolSet",
     "terminal_tool",
     "read_file_tool",
     "apply_patch_tool",
     "tool",
+    "tools",
     "tests",
     "Request",
 ]

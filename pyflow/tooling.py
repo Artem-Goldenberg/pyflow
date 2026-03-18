@@ -8,8 +8,21 @@ import logging
 from dataclasses import dataclass, field
 from itertools import count
 from types import NoneType
-from typing import Any, Callable, Iterable, ParamSpec, Sequence, TypeVar, cast, overload
+from typing import (
+    Annotated,
+    Any,
+    Callable,
+    Iterable,
+    ParamSpec,
+    Sequence,
+    TypeVar,
+    cast,
+    get_args,
+    get_origin,
+    overload,
+)
 
+from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.llm import TextContent
 from openhands.sdk.tool import (
     Action,
@@ -54,6 +67,13 @@ class Tool(Context):
         return f"Use {noun}: {', '.join(names)}."
 
 
+@dataclass(frozen=True, kw_only=True)
+class ToolContext:
+    """Runtime context injected into pyflow tool functions."""
+
+    conversation: BaseConversation | None = None
+
+
 @dataclass(frozen=True)
 class FunctionTool[**Parameters, Result](Tool):
     """
@@ -64,6 +84,7 @@ class FunctionTool[**Parameters, Result](Tool):
     - ``description``: human-readable tool description, usually from the function docstring.
     - ``function``: original Python callable for pyflow-backed tools. ``None`` for wrapped
       OpenHands tools because pyflow cannot execute them directly.
+    - ``annotations``: OpenHands-compatible behavior hints for pyflow-backed tools.
     - ``_action_type``: generated or reused OpenHands ``Action`` model describing tool input.
       Present only for pyflow-backed tools and exposed via ``action_type``.
     - ``_observation_type``: generated or reused OpenHands ``Observation`` model describing
@@ -79,6 +100,7 @@ class FunctionTool[**Parameters, Result](Tool):
     name: str
     description: str
     function: Callable[Parameters, Result] | None = field(default=None, repr=False, compare=False)
+    annotations: ToolAnnotations | None = field(default=None, repr=False, compare=False)
     _action_type: type[Action] | None = field(default=None, repr=False, compare=False)
     _observation_type: type[Observation] | None = field(default=None, repr=False, compare=False)
 
@@ -88,6 +110,10 @@ class FunctionTool[**Parameters, Result](Tool):
         function: Callable[Parameters, Result],
         *,
         name: str | None = None,
+        read_only: bool = False,
+        destructive: bool = True,
+        idempotent: bool = False,
+        open_world: bool = True,
     ) -> FunctionTool[Parameters, Result]:
         """Register a Python function as a pyflow tool."""
         if inspect.iscoroutinefunction(function):
@@ -104,7 +130,7 @@ class FunctionTool[**Parameters, Result](Tool):
             )
 
         signature = inspect.signature(function)
-        parameters, return_annotation = _inspect_tool_signature(
+        parameters, return_annotation, accepts_context = _inspect_tool_signature(
             resolved_name,
             function,
             signature,
@@ -123,28 +149,30 @@ class FunctionTool[**Parameters, Result](Tool):
             generated_type_name_prefix,
             return_annotation,
         )
-        definition = _build_function_tool_definition(
-            name=resolved_name,
-            description=description,
-            function=function,
-            generated_type_name_prefix=generated_type_name_prefix,
-            action_type=action_type,
-            observation_type=observation_type,
-            parameter_names=parameter_names,
-            returns_observation=returns_observation,
-        )
-        register_tool(resolved_name, definition)
-
         tool_instance = cast(
             FunctionTool[Parameters, Result],
             cls(
                 name=resolved_name,
                 description=description,
                 function=function,
+                annotations=_build_tool_annotations(
+                    resolved_name,
+                    read_only=read_only,
+                    destructive=destructive,
+                    idempotent=idempotent,
+                    open_world=open_world,
+                ),
                 _action_type=action_type,
                 _observation_type=observation_type,
             ),
         )
+        definition = tool_instance._build_openhands_definition(
+            generated_type_name_prefix=generated_type_name_prefix,
+            parameter_names=parameter_names,
+            returns_observation=returns_observation,
+            accepts_context=accepts_context,
+        )
+        register_tool(resolved_name, definition)
         _REGISTERED_TOOLS[resolved_name] = tool_instance
         return tool_instance
 
@@ -202,6 +230,52 @@ class FunctionTool[**Parameters, Result](Tool):
     def to_openhands_spec(self) -> OpenHandsToolSpec:
         return OpenHandsToolSpec(name=self.name)
 
+    def _build_openhands_definition(
+        self,
+        *,
+        generated_type_name_prefix: str,
+        parameter_names: Sequence[str],
+        returns_observation: bool,
+        accepts_context: bool,
+    ) -> OpenHandsToolDefinition:
+        if self.function is None:
+            raise TypeError(
+                f"Tool '{self.name}' is OpenHands-backed and does not define a local executor."
+            )
+
+        executor = _FunctionToolExecutor(
+            function=self.function,
+            observation_type=self.observation_type,
+            parameter_names=parameter_names,
+            returns_observation=returns_observation,
+            accepts_context=accepts_context,
+        )
+
+        def _unsupported_create(cls, conv_state=None, **params):  # noqa: ANN001, ANN202, ARG001
+            if params:
+                raise ValueError(f"Tool '{self.name}' does not accept OpenHands tool params.")
+            raise NotImplementedError("Pyflow function tools are registered as fixed instances.")
+
+        definition_type = cast(
+            type[OpenHandsToolDefinition],
+            type(
+                f"{generated_type_name_prefix}ToolDefinition",
+                (OpenHandsToolDefinition,),
+                {
+                    "__module__": __name__,
+                    "name": self.name,
+                    "create": classmethod(_unsupported_create),
+                },
+            ),
+        )
+        return definition_type(
+            description=self.description,
+            action_type=self.action_type,
+            observation_type=self.observation_type,
+            annotations=self.annotations,
+            executor=executor,
+        )
+
 
 @dataclass(frozen=True)
 class ToolSet(Tool):
@@ -213,7 +287,7 @@ class ToolSet(Tool):
 
         for tool in self.tools:
             if not isinstance(tool, Tool):
-                raise TypeError("tool.use(...) only accepts Tool instances.")
+                raise TypeError("ToolSet only accepts Tool instances.")
 
         object.__setattr__(self, "tools", tuple(self.tools))
 
@@ -231,22 +305,30 @@ class _FunctionToolExecutor(ToolExecutor[Action, Observation]):
         observation_type: type[Observation],
         parameter_names: Sequence[str],
         returns_observation: bool,
+        accepts_context: bool,
     ) -> None:
         self._function = function
         self._observation_type = observation_type
         self._parameter_names = tuple(parameter_names)
         self._returns_observation = returns_observation
+        self._accepts_context = accepts_context
 
     def __call__(
         self,
         action: Action,
-        conversation=None,  # noqa: ARG002 - OpenHands executor signature
+        conversation: BaseConversation | None = None,
     ) -> Observation:
         arguments = {
             parameter_name: getattr(action, parameter_name)
             for parameter_name in self._parameter_names
         }
-        result = self._function(**arguments)
+        if self._accepts_context:
+            result = self._function(
+                ToolContext(conversation=conversation),
+                **arguments,
+            )
+        else:
+            result = self._function(**arguments)
 
         if self._returns_observation:
             if isinstance(result, Observation):
@@ -261,73 +343,89 @@ class _FunctionToolExecutor(ToolExecutor[Action, Observation]):
         )
 
 
-class _ToolFactory:
+@overload
+def tool(
+    value: Callable[Parameters, Result],
+    /,
+    *,
+    name: str | None = None,
+    read_only: bool = False,
+    destructive: bool = True,
+    idempotent: bool = False,
+    open_world: bool = True,
+) -> FunctionTool[Parameters, Result]: ...
+
+
+@overload
+def tool(
+    value: None = None,
+    /,
+    *,
+    name: str | None = None,
+    read_only: bool = False,
+    destructive: bool = True,
+    idempotent: bool = False,
+    open_world: bool = True,
+) -> Callable[[Callable[Parameters, Result]], FunctionTool[Parameters, Result]]: ...
+
+
+def tool(
+    value: Callable[..., Any] | None = None,
+    /,
+    *,
+    name: str | None = None,
+    read_only: bool = False,
+    destructive: bool = True,
+    idempotent: bool = False,
+    open_world: bool = True,
+) -> FunctionTool[..., Any] | Callable[[Callable[..., Any]], FunctionTool[..., Any]]:
     """
-    User-facing tool API.
+    Register function-backed tools via the public DSL.
 
     Supported forms:
     - ``@tool`` registers a function-backed tool using the function name.
+    - ``@tool(read_only=True, ...)`` registers a function-backed tool with annotations.
     - ``@tool(name="custom_name")`` registers a function-backed tool with an explicit name.
-    - ``tool("existing_name")`` looks up a previously registered tool by name.
-    - ``tool.use(tool_a, "tool_b")`` creates an immutable ``ToolSet`` from tool objects
-      and registered tool names.
+    - ``tool(existing_function, ...)`` registers an already-defined callable.
     """
+    if callable(value):
+        return FunctionTool.from_function(
+            value,
+            name=name,
+            read_only=read_only,
+            destructive=destructive,
+            idempotent=idempotent,
+            open_world=open_world,
+        )
 
-    @overload
-    def __call__(self, value: str, /) -> FunctionTool[..., Any]: ...
+    if value is None:
 
-    @overload
-    def __call__(self, value: Callable[Parameters, Result], /) -> FunctionTool[Parameters, Result]: ...
+        def decorator(function: Callable[..., Any]) -> FunctionTool[..., Any]:
+            return FunctionTool.from_function(
+                function,
+                name=name,
+                read_only=read_only,
+                destructive=destructive,
+                idempotent=idempotent,
+                open_world=open_world,
+            )
 
-    @overload
-    def __call__(
-        self,
-        value: Callable[Parameters, Result],
-        /,
-        *,
-        name: str,
-    ) -> FunctionTool[Parameters, Result]: ...
+        return decorator
 
-    @overload
-    def __call__(
-        self,
-        value: None = None,
-        /,
-        *,
-        name: str,
-    ) -> Callable[[Callable[Parameters, Result]], FunctionTool[Parameters, Result]]: ...
-
-    def __call__(
-        self,
-        value: Callable[..., Any] | str | None = None,
-        /,
-        *,
-        name: str | None = None,
-    ) -> FunctionTool[..., Any] | Callable[[Callable[..., Any]], FunctionTool[..., Any]]:
-        """Register or resolve tools via the public DSL."""
-        if callable(value):
-            return FunctionTool.from_function(value, name=name)
-
-        if isinstance(value, str):
-            if name is not None:
-                raise TypeError("tool('name') does not accept the 'name=' keyword.")
-            return _resolve_registered_tool(value)
-
-        if value is None and name is not None:
-
-            def decorator(function: Callable[..., Any]) -> FunctionTool[..., Any]:
-                return FunctionTool.from_function(function, name=name)
-
-            return decorator
-
-        raise TypeError("Use @tool, @tool(name='...'), or tool('existing_name').")
-
-    def use(self, *tools: Tool | str) -> ToolSet:
-        """Create a ``ToolSet`` from tool objects or registered tool names."""
-        return ToolSet(tools=tuple(_convert_tool(tool) for tool in tools))
+    raise TypeError(
+        "Use @tool or @tool(...) to define a tool. Use tools(...) to resolve registered tools."
+    )
 
 
-tool = _ToolFactory()
+def tools(*values: Tool | str) -> Tool:
+    """Resolve registered tools by name and group multiple tools when needed."""
+    if not values:
+        raise TypeError("tools(...) requires at least one tool name or Tool instance.")
+
+    resolved = tuple(_convert_tool(value) for value in values)
+    if len(resolved) == 1:
+        return resolved[0]
+    return ToolSet(tools=resolved)
 
 terminal_tool = FunctionTool.from_openhands(
     name="terminal",
@@ -401,56 +499,6 @@ def _build_observation_type(
     return observation_type, False
 
 
-def _build_function_tool_definition(
-    *,
-    name: str,
-    description: str,
-    function: Callable[..., Any],
-    generated_type_name_prefix: str,
-    action_type: type[Action],
-    observation_type: type[Observation],
-    parameter_names: Sequence[str],
-    returns_observation: bool,
-) -> OpenHandsToolDefinition:
-    executor = _FunctionToolExecutor(
-        function=function,
-        observation_type=observation_type,
-        parameter_names=parameter_names,
-        returns_observation=returns_observation,
-    )
-
-    def _unsupported_create(cls, conv_state=None, **params):  # noqa: ANN001, ANN202, ARG001
-        if params:
-            raise ValueError(f"Tool '{name}' does not accept OpenHands tool params.")
-        raise NotImplementedError("Pyflow function tools are registered as fixed instances.")
-
-    definition_type = cast(
-        type[OpenHandsToolDefinition],
-        type(
-            f"{generated_type_name_prefix}ToolDefinition",
-            (OpenHandsToolDefinition,),
-            {
-                "__module__": __name__,
-                "name": name,
-                "create": classmethod(_unsupported_create),
-            },
-        ),
-    )
-    return definition_type(
-        description=description,
-        action_type=action_type,
-        observation_type=observation_type,
-        annotations=ToolAnnotations(
-            title=name,
-            readOnlyHint=False,
-            destructiveHint=True,
-            idempotentHint=False,
-            openWorldHint=False,
-        ),
-        executor=executor,
-    )
-
-
 def _render_result(result: Any) -> str:
     if isinstance(result, str):
         return result
@@ -506,11 +554,12 @@ def _inspect_tool_signature(
     tool_name: str,
     function: Callable[..., Any],
     signature: inspect.Signature,
-) -> tuple[Sequence[inspect.Parameter], Any]:
+) -> tuple[Sequence[inspect.Parameter], Any, bool]:
     annotations = inspect.get_annotations(function, eval_str=True)
     parameters: list[inspect.Parameter] = []
+    accepts_context = False
 
-    for parameter in signature.parameters.values():
+    for index, parameter in enumerate(signature.parameters.values()):
         if parameter.kind in (
             inspect.Parameter.POSITIONAL_ONLY,
             inspect.Parameter.VAR_POSITIONAL,
@@ -521,6 +570,13 @@ def _inspect_tool_signature(
             )
 
         annotation = annotations.get(parameter.name, parameter.annotation)
+        if _is_tool_context_annotation(annotation):
+            if index != 0:
+                raise ValueError(
+                    f"Tool function '{tool_name}' may only declare ToolContext as its first parameter."
+                )
+            accepts_context = True
+            continue
         if annotation is inspect.Signature.empty:
             raise ValueError(
                 f"Tool function '{tool_name}' parameter '{parameter.name}' must be annotated."
@@ -544,7 +600,7 @@ def _inspect_tool_signature(
     if return_annotation is None:
         return_annotation = NoneType
 
-    return tuple(parameters), return_annotation
+    return tuple(parameters), return_annotation, accepts_context
 
 
 def _convert_tool(value: Tool | str) -> Tool:
@@ -563,7 +619,8 @@ def _resolve_registered_tool(name: str) -> FunctionTool[..., Any]:
 
     available = sorted(_REGISTERED_TOOLS.keys())
     raise ValueError(
-        f"Unknown tool '{name}'. Register it with @tool or FunctionTool.from_openhands(...). "
+        f"Unknown tool '{name}'. Define it with @tool or register it via "
+        f"FunctionTool.from_openhands(...), then resolve it with tools(...). "
         f"Available tools: {available}"
     )
 
@@ -571,3 +628,31 @@ def _resolve_registered_tool(name: str) -> FunctionTool[..., Any]:
 def _warn_about_tool_replacement(name: str, *, source: str) -> None:
     if name in _REGISTERED_TOOLS or name in list_registered_tools():
         logger.warning("Replacing tool '%s' with %s.", name, source)
+
+
+def _build_tool_annotations(
+    name: str,
+    *,
+    read_only: bool,
+    destructive: bool,
+    idempotent: bool,
+    open_world: bool,
+) -> ToolAnnotations:
+    return ToolAnnotations(
+        title=name,
+        readOnlyHint=read_only,
+        destructiveHint=destructive,
+        idempotentHint=idempotent,
+        openWorldHint=open_world,
+    )
+
+
+def _is_tool_context_annotation(annotation: Any) -> bool:
+    if annotation is ToolContext:
+        return True
+
+    if get_origin(annotation) is Annotated:
+        annotated_type, *_ = get_args(annotation)
+        return annotated_type is ToolContext
+
+    return isinstance(annotation, type) and issubclass(annotation, ToolContext)
