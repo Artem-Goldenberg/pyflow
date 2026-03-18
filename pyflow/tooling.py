@@ -1,21 +1,19 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-import importlib
 import inspect
 import json
 import logging
 from dataclasses import dataclass, field
 from itertools import count
-from types import NoneType
+from types import EllipsisType, NoneType
 from typing import (
     Annotated,
     Any,
     Callable,
     Iterable,
-    ParamSpec,
+    Protocol,
     Sequence,
-    TypeVar,
     cast,
     get_args,
     get_origin,
@@ -34,17 +32,205 @@ from openhands.sdk.tool import (
     list_registered_tools,
     register_tool,
 )
-from pydantic import create_model
+from openhands.tools.apply_patch import ApplyPatchTool
+from openhands.tools.apply_patch.definition import (
+    ApplyPatchAction,
+    ApplyPatchObservation,
+)
+from openhands.tools.gemini.read_file import ReadFileTool
+from openhands.tools.gemini.read_file.definition import (
+    ReadFileAction,
+    ReadFileObservation,
+)
+from openhands.tools.terminal import TerminalTool
+from openhands.tools.terminal.definition import (
+    TerminalAction,
+    TerminalObservation,
+)
+from pydantic import BaseModel, create_model
 
 from pyflow.context import Context
 
 
-Parameters = ParamSpec("Parameters")
-Result = TypeVar("Result")
-
 logger = logging.getLogger(__name__)
-_REGISTERED_TOOLS: dict[str, "FunctionTool[..., Any]"] = {}
+# OpenHands/Pydantic treat generated schema classes as globally named kinds, so
+# the user-facing tool name alone is not enough when a tool is redefined in the
+# same process. A monotonic suffix keeps generated Action/Observation classes
+# unique across registrations.
+_REGISTERED_TOOLS: dict[str, Tool] = {}
 _GENERATED_TOOL_TYPE_IDS = count()
+_REQUIRED_MODEL_FIELD = ...
+
+
+class SupportsStringRender(Protocol):
+    def __str__(self) -> str: ...
+
+
+type ToolScalar = str | int | float | bool | None
+type ToolContainer = list[ToolReturnValue] | dict[str, ToolReturnValue] | tuple[ToolReturnValue, ...]
+type ToolReturnValue = Observation | BaseModel | ToolScalar | ToolContainer | SupportsStringRender
+
+
+class ToolDecorator(Protocol):
+    def __call__[**ToolParameters, ToolResult: ToolReturnValue](
+        self,
+        function: Callable[ToolParameters, ToolResult],
+        /,
+    ) -> FunctionTool[ToolParameters, ToolResult]: ...
+
+
+@overload
+def tool[**ToolParameters, ToolResult: ToolReturnValue](
+    value: Callable[ToolParameters, ToolResult],
+    name: str | None = None,
+    *,
+    read_only: bool = False,
+    destructive: bool = True,
+    idempotent: bool = False,
+    open_world: bool = True,
+) -> FunctionTool[ToolParameters, ToolResult]: ...
+
+
+@overload
+def tool[**ToolParameters, ToolResult: ToolReturnValue](
+    value: str,
+    /,
+    *,
+    read_only: bool = False,
+    destructive: bool = True,
+    idempotent: bool = False,
+    open_world: bool = True,
+) -> ToolDecorator: ...
+
+
+@overload
+def tool[**ToolParameters, ToolResult: ToolReturnValue](
+    value: None = None,
+    *,
+    name: str | None = None,
+    read_only: bool = False,
+    destructive: bool = True,
+    idempotent: bool = False,
+    open_world: bool = True,
+) -> ToolDecorator: ...
+
+
+def tool[**ToolParameters, ToolResult: ToolReturnValue](
+    value: Callable[ToolParameters, ToolResult] | str | None = None,
+    name: str | None = None,
+    read_only: bool = False,
+    destructive: bool = True,
+    idempotent: bool = False,
+    open_world: bool = True,
+) -> FunctionTool[ToolParameters, ToolResult] | ToolDecorator:
+    """
+    Register function-backed tools via the public DSL.
+
+    Supported forms:
+    - ``@tool`` registers a function-backed tool using the function name.
+    - ``@tool("custom_name")`` registers a function-backed tool with a positional name.
+    - ``@tool(read_only=True, ...)`` registers a function-backed tool with annotations.
+    - ``@tool(name="custom_name")`` registers a function-backed tool with an explicit name.
+    - ``tool(existing_function, "custom_name")`` registers an already-defined callable with a
+      positional name.
+    - ``tool(existing_function, ...)`` registers an already-defined callable.
+
+    A valid tool function must satisfy these rules:
+    - It must be synchronous. ``async def`` tool functions are rejected.
+    - It must have a non-empty name, either from the Python function name or from ``name=``.
+      snake_case names are recommended because the final tool name is exposed to the model,
+      OpenHands, and ``tools(...)`` lookup.
+    - It must define a docstring. The docstring becomes the tool description shown to the
+      runtime model.
+    - Every exposed parameter must have a type annotation.
+    - Parameters must be standard positional-or-keyword or keyword-only parameters.
+      Positional-only parameters, ``*args``, and ``**kwargs`` are rejected.
+    - Default values are allowed and become optional fields in the generated input schema.
+
+    Tool context:
+    - The first parameter may be ``ToolContext`` to receive runtime context such as the active
+      conversation.
+    - A context parameter is injected by pyflow and is not included in the generated tool input
+      schema.
+    - ``Annotated[ToolContext, ...]`` and ``ToolContext`` subclasses are also accepted as the
+      first parameter.
+
+    Return values:
+    - The function must declare a return type annotation.
+    - If the return annotation is an ``Observation`` subclass, that class becomes the tool's
+      observation schema. The function may return either an instance of that observation type or
+      any payload that Pydantic can validate into it.
+    - Otherwise pyflow creates an observation wrapper with a ``result`` field typed from the
+      declared return annotation and stores the returned value there.
+    - Return annotations should therefore be Pydantic-compatible. Common choices include
+      ``str``, ``int``, ``float``, ``bool``, ``None``, typed ``list``/``dict``/``tuple``
+      containers, and ``pydantic.BaseModel`` subclasses.
+    - ``BaseModel`` results are rendered into structured JSON text for the observation content;
+      other non-container results fall back to ``str(result)``.
+    """
+    if callable(value):
+        return FunctionTool.from_function(
+            value,
+            name=name,
+            read_only=read_only,
+            destructive=destructive,
+            idempotent=idempotent,
+            open_world=open_world,
+        )
+
+    if isinstance(value, str):
+        if name is not None:
+            raise TypeError(
+                "Use either tool('name', ...) or tool(name='name', ...), not both."
+            )
+
+        def named_tool_decorator[**DecoratorParameters, DecoratorResult: ToolReturnValue](
+            function: Callable[DecoratorParameters, DecoratorResult],
+        ) -> FunctionTool[DecoratorParameters, DecoratorResult]:
+            return FunctionTool.from_function(
+                function,
+                name=value,
+                read_only=read_only,
+                destructive=destructive,
+                idempotent=idempotent,
+                open_world=open_world,
+            )
+
+        return named_tool_decorator
+
+    if value is None:
+
+        def default_tool_decorator[
+            **DecoratorParameters,
+            DecoratorResult: ToolReturnValue,
+        ](
+            function: Callable[DecoratorParameters, DecoratorResult],
+        ) -> FunctionTool[DecoratorParameters, DecoratorResult]:
+            return FunctionTool.from_function(
+                function,
+                name=name,
+                read_only=read_only,
+                destructive=destructive,
+                idempotent=idempotent,
+                open_world=open_world,
+            )
+
+        return default_tool_decorator
+
+    raise TypeError(
+        "Use @tool or @tool(...) to define a tool. Use tools(...) to resolve registered tools."
+    )
+
+
+def tools(*values: Tool | str) -> Tool:
+    """Resolve registered tools by name and group multiple tools when needed."""
+    if not values:
+        raise TypeError("tools(...) requires at least one tool name or Tool instance.")
+
+    resolved = tuple(_convert_tool(value) for value in values)
+    if len(resolved) == 1:
+        return resolved[0]
+    return ToolSet(tools=resolved)
 
 
 class Tool(Context):
@@ -75,7 +261,7 @@ class ToolContext:
 
 
 @dataclass(frozen=True)
-class FunctionTool[**Parameters, Result](Tool):
+class FunctionTool[**ToolParameters, ToolResult: ToolReturnValue](Tool):
     """
     Pyflow wrapper for either a local Python tool or an imported OpenHands tool.
 
@@ -84,7 +270,8 @@ class FunctionTool[**Parameters, Result](Tool):
     - ``description``: human-readable tool description, usually from the function docstring.
     - ``function``: original Python callable for pyflow-backed tools. ``None`` for wrapped
       OpenHands tools because pyflow cannot execute them directly.
-    - ``annotations``: OpenHands-compatible behavior hints for pyflow-backed tools.
+    - ``annotations``: OpenHands-compatible behavior hints for either pyflow-backed or
+      wrapped OpenHands tools.
     - ``_action_type``: generated or reused OpenHands ``Action`` model describing tool input.
       Present only for pyflow-backed tools and exposed via ``action_type``.
     - ``_observation_type``: generated or reused OpenHands ``Observation`` model describing
@@ -93,29 +280,34 @@ class FunctionTool[**Parameters, Result](Tool):
 
     Mode summary:
     - Local pyflow tool: all fields above are populated, and the wrapper is callable.
-    - Wrapped OpenHands tool: only ``name`` and ``description`` are stored here; execution
-      stays inside the OpenHands registry.
+    - Wrapped OpenHands tool: execution stays inside the OpenHands registry, but native
+      metadata such as ``annotations``, ``action_type``, and ``observation_type`` may be
+      attached explicitly when wrapping the tool.
     """
 
     name: str
     description: str
-    function: Callable[Parameters, Result] | None = field(default=None, repr=False, compare=False)
+    function: Callable[ToolParameters, ToolResult] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
     annotations: ToolAnnotations | None = field(default=None, repr=False, compare=False)
     _action_type: type[Action] | None = field(default=None, repr=False, compare=False)
     _observation_type: type[Observation] | None = field(default=None, repr=False, compare=False)
 
     @classmethod
     def from_function(
-        cls: type[FunctionTool[Parameters, Result]],
-        function: Callable[Parameters, Result],
+        cls,
+        function: Callable[ToolParameters, ToolResult],
         *,
         name: str | None = None,
         read_only: bool = False,
         destructive: bool = True,
         idempotent: bool = False,
         open_world: bool = True,
-    ) -> FunctionTool[Parameters, Result]:
-        """Register a Python function as a pyflow tool."""
+    ) -> FunctionTool[ToolParameters, ToolResult]:
+        """Register a Python function as a pyflow tool. See ``tool`` for callable rules."""
         if inspect.iscoroutinefunction(function):
             raise ValueError("Async tool functions are not supported.")
 
@@ -129,11 +321,9 @@ class FunctionTool[**Parameters, Result](Tool):
                 f"Tool function '{resolved_name}' must define a docstring description."
             )
 
-        signature = inspect.signature(function)
         parameters, return_annotation, accepts_context = _inspect_tool_signature(
             resolved_name,
             function,
-            signature,
         )
         _warn_about_tool_replacement(
             resolved_name,
@@ -145,31 +335,32 @@ class FunctionTool[**Parameters, Result](Tool):
             generated_type_name_prefix,
             parameters,
         )
-        observation_type, returns_observation = _build_observation_type(
+        observation_type = _build_observation_type(
             generated_type_name_prefix,
             return_annotation,
         )
-        tool_instance = cast(
-            FunctionTool[Parameters, Result],
-            cls(
-                name=resolved_name,
-                description=description,
-                function=function,
-                annotations=_build_tool_annotations(
-                    resolved_name,
-                    read_only=read_only,
-                    destructive=destructive,
-                    idempotent=idempotent,
-                    open_world=open_world,
-                ),
-                _action_type=action_type,
-                _observation_type=observation_type,
+        observation_result_adapter = _build_observation_result_adapter(
+            observation_type,
+            return_annotation,
+        )
+        tool_instance = cls(
+            name=resolved_name,
+            description=description,
+            function=function,
+            annotations=_build_tool_annotations(
+                resolved_name,
+                read_only=read_only,
+                destructive=destructive,
+                idempotent=idempotent,
+                open_world=open_world,
             ),
+            _action_type=action_type,
+            _observation_type=observation_type,
         )
         definition = tool_instance._build_openhands_definition(
             generated_type_name_prefix=generated_type_name_prefix,
             parameter_names=parameter_names,
-            returns_observation=returns_observation,
+            observation_result_adapter=observation_result_adapter,
             accepts_context=accepts_context,
         )
         register_tool(resolved_name, definition)
@@ -179,29 +370,45 @@ class FunctionTool[**Parameters, Result](Tool):
     @classmethod
     def from_openhands(
         cls,
+        definition_type: type[OpenHandsToolDefinition],
         *,
-        name: str,
-        module_name: str,
         description: str | None = None,
-    ) -> FunctionTool[..., Any]:
-        """Import and wrap an OpenHands tool that registers itself by module import."""
-        if not name.strip():
-            raise ValueError("OpenHands tool wrappers must have a non-empty name.")
-        if not module_name.strip():
-            raise ValueError("OpenHands tool wrappers must have a non-empty module name.")
+        action_type: type[Action] | None = None,
+        observation_type: type[Observation] | None = None,
+        annotations: ToolAnnotations | None = None,
+    ) -> FunctionTool[..., ToolReturnValue]:
+        """
+        Wrap an imported OpenHands ``ToolDefinition`` subclass.
 
-        importlib.import_module(module_name)
-        if name not in list_registered_tools():
-            raise ValueError(f"OpenHands tool '{name}' is not registered.")
+        Example:
+        - ``FunctionTool.from_openhands(TerminalTool)``
+        """
+        resolved_name = definition_type.name
+        if not resolved_name.strip():
+            raise ValueError("OpenHands tool wrappers must have a non-empty name.")
+
+        if resolved_name not in list_registered_tools():
+            register_tool(resolved_name, definition_type)
 
         tool_instance = cls(
-            name=name,
-            description=description or f"OpenHands tool '{name}'.",
+            name=resolved_name,
+            description=(
+                description
+                or inspect.getdoc(definition_type)
+                or f"OpenHands tool '{resolved_name}'."
+            ),
+            annotations=annotations,
+            _action_type=action_type,
+            _observation_type=observation_type,
         )
-        _REGISTERED_TOOLS[name] = tool_instance
-        return tool_instance
+        _REGISTERED_TOOLS[resolved_name] = tool_instance
+        return cast(FunctionTool[..., ToolReturnValue], tool_instance)
 
-    def __call__(self, *args: Parameters.args, **kwargs: Parameters.kwargs) -> Result:
+    def __call__(
+        self,
+        *args: ToolParameters.args,
+        **kwargs: ToolParameters.kwargs,
+    ) -> ToolResult:
         if self.function is None:
             raise TypeError(
                 f"Tool '{self.name}' is OpenHands-backed and cannot be called directly."
@@ -235,7 +442,7 @@ class FunctionTool[**Parameters, Result](Tool):
         *,
         generated_type_name_prefix: str,
         parameter_names: Sequence[str],
-        returns_observation: bool,
+        observation_result_adapter: Callable[[ToolReturnValue], Observation],
         accepts_context: bool,
     ) -> OpenHandsToolDefinition:
         if self.function is None:
@@ -245,9 +452,8 @@ class FunctionTool[**Parameters, Result](Tool):
 
         executor = _FunctionToolExecutor(
             function=self.function,
-            observation_type=self.observation_type,
             parameter_names=parameter_names,
-            returns_observation=returns_observation,
+            observation_result_adapter=observation_result_adapter,
             accepts_context=accepts_context,
         )
 
@@ -297,147 +503,41 @@ class ToolSet(Tool):
     def to_openhands_spec(self) -> OpenHandsToolSpec:
         raise TypeError("ToolSet must be flattened before OpenHands compilation.")
 
-
-class _FunctionToolExecutor(ToolExecutor[Action, Observation]):
-    def __init__(
-        self,
-        function: Callable[..., Any],
-        observation_type: type[Observation],
-        parameter_names: Sequence[str],
-        returns_observation: bool,
-        accepts_context: bool,
-    ) -> None:
-        self._function = function
-        self._observation_type = observation_type
-        self._parameter_names = tuple(parameter_names)
-        self._returns_observation = returns_observation
-        self._accepts_context = accepts_context
-
-    def __call__(
-        self,
-        action: Action,
-        conversation: BaseConversation | None = None,
-    ) -> Observation:
-        arguments = {
-            parameter_name: getattr(action, parameter_name)
-            for parameter_name in self._parameter_names
-        }
-        if self._accepts_context:
-            result = self._function(
-                ToolContext(conversation=conversation),
-                **arguments,
-            )
-        else:
-            result = self._function(**arguments)
-
-        if self._returns_observation:
-            if isinstance(result, Observation):
-                return result
-            return self._observation_type.model_validate(result)
-
-        return self._observation_type.model_validate(
-            {
-                "result": result,
-                "content": [TextContent(text=_render_result(result))],
-            }
-        )
-
-
-@overload
-def tool(
-    value: Callable[Parameters, Result],
-    /,
-    *,
-    name: str | None = None,
-    read_only: bool = False,
-    destructive: bool = True,
-    idempotent: bool = False,
-    open_world: bool = True,
-) -> FunctionTool[Parameters, Result]: ...
-
-
-@overload
-def tool(
-    value: None = None,
-    /,
-    *,
-    name: str | None = None,
-    read_only: bool = False,
-    destructive: bool = True,
-    idempotent: bool = False,
-    open_world: bool = True,
-) -> Callable[[Callable[Parameters, Result]], FunctionTool[Parameters, Result]]: ...
-
-
-def tool(
-    value: Callable[..., Any] | None = None,
-    /,
-    *,
-    name: str | None = None,
-    read_only: bool = False,
-    destructive: bool = True,
-    idempotent: bool = False,
-    open_world: bool = True,
-) -> FunctionTool[..., Any] | Callable[[Callable[..., Any]], FunctionTool[..., Any]]:
-    """
-    Register function-backed tools via the public DSL.
-
-    Supported forms:
-    - ``@tool`` registers a function-backed tool using the function name.
-    - ``@tool(read_only=True, ...)`` registers a function-backed tool with annotations.
-    - ``@tool(name="custom_name")`` registers a function-backed tool with an explicit name.
-    - ``tool(existing_function, ...)`` registers an already-defined callable.
-    """
-    if callable(value):
-        return FunctionTool.from_function(
-            value,
-            name=name,
-            read_only=read_only,
-            destructive=destructive,
-            idempotent=idempotent,
-            open_world=open_world,
-        )
-
-    if value is None:
-
-        def decorator(function: Callable[..., Any]) -> FunctionTool[..., Any]:
-            return FunctionTool.from_function(
-                function,
-                name=name,
-                read_only=read_only,
-                destructive=destructive,
-                idempotent=idempotent,
-                open_world=open_world,
-            )
-
-        return decorator
-
-    raise TypeError(
-        "Use @tool or @tool(...) to define a tool. Use tools(...) to resolve registered tools."
-    )
-
-
-def tools(*values: Tool | str) -> Tool:
-    """Resolve registered tools by name and group multiple tools when needed."""
-    if not values:
-        raise TypeError("tools(...) requires at least one tool name or Tool instance.")
-
-    resolved = tuple(_convert_tool(value) for value in values)
-    if len(resolved) == 1:
-        return resolved[0]
-    return ToolSet(tools=resolved)
-
 terminal_tool = FunctionTool.from_openhands(
-    name="terminal",
-    module_name="openhands.tools.terminal",
+    TerminalTool,
+    annotations=ToolAnnotations(
+        title="terminal",
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+    action_type=TerminalAction,
+    observation_type=TerminalObservation,
 )
 read_file_tool = FunctionTool.from_openhands(
-    name="read_file",
-    module_name="openhands.tools.gemini.read_file",
+    ReadFileTool,
+    annotations=ToolAnnotations(
+        title="read_file",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+    action_type=ReadFileAction,
+    observation_type=ReadFileObservation,
 )
 apply_patch_tool = FunctionTool.from_openhands(
-    name="apply_patch",
-    module_name="openhands.tools.apply_patch",
+    ApplyPatchTool,
+    annotations=ToolAnnotations(
+        title="apply_patch",
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+    action_type=ApplyPatchAction,
+    observation_type=ApplyPatchObservation,
 )
 
 
@@ -456,11 +556,28 @@ def compile_openhands_tools(*tool_groups: Sequence[Tool]) -> Sequence[OpenHandsT
     return tuple(tool.to_openhands_spec() for tool in merged.values())
 
 
+def flatten_tools(tools: Sequence[Tool]) -> Sequence[Tool]:
+    flattened: list[Tool] = []
+    for tool in tools:
+        if isinstance(tool, ToolSet):
+            flattened.extend(flatten_tools(tool.tools))
+            continue
+        if isinstance(tool, Tool):
+            flattened.append(tool)
+            continue
+        raise TypeError(f"Unsupported tool input: {type(tool)!r}")
+    return tuple(flattened)
+
+
+def default_agent_tools() -> Sequence[Tool]:
+    return (terminal_tool, read_file_tool, apply_patch_tool)
+
+
 def _build_action_type(
     generated_type_name_prefix: str,
     parameters: Sequence[inspect.Parameter],
 ) -> tuple[type[Action], Sequence[str]]:
-    fields: dict[str, tuple[Any, Any]] = {}
+    fields: dict[str, tuple[object, object]] = {}
     parameter_names: list[str] = []
 
     for parameter in parameters:
@@ -469,10 +586,9 @@ def _build_action_type(
 
     action_type = cast(
         type[Action],
-        cast(Any, create_model)(
+        _create_generated_model(
             f"{generated_type_name_prefix}Action",
-            __base__=Action,
-            __module__=__name__,
+            Action,
             **fields,
         ),
     )
@@ -481,32 +597,56 @@ def _build_action_type(
 
 def _build_observation_type(
     generated_type_name_prefix: str,
-    return_annotation: Any,
-) -> tuple[type[Observation], bool]:
+    return_annotation: object,
+) -> type[Observation]:
     if isinstance(return_annotation, type) and issubclass(return_annotation, Observation):
-        return return_annotation, True
+        return return_annotation
 
     default = None if return_annotation is NoneType else ...
     observation_type = cast(
         type[Observation],
-        cast(Any, create_model)(
+        _create_generated_model(
             f"{generated_type_name_prefix}Observation",
-            __base__=Observation,
-            __module__=__name__,
+            Observation,
             result=(return_annotation, default),
         ),
     )
-    return observation_type, False
+    return observation_type
 
 
-def _render_result(result: Any) -> str:
+def _build_observation_result_adapter(
+    observation_type: type[Observation],
+    return_annotation: object,
+) -> Callable[[ToolReturnValue], Observation]:
+    if isinstance(return_annotation, type) and issubclass(return_annotation, Observation):
+        return lambda result: _coerce_observation_result(observation_type, result)
+    return lambda result: _wrap_tool_result_in_observation(observation_type, result)
+
+
+def _create_generated_model(
+    model_name: str,
+    base_type: type[BaseModel],
+    **fields: tuple[object, object],
+) -> type[BaseModel]:
+    return cast(
+        type[BaseModel],
+        cast(Any, create_model)(
+            model_name,
+            __base__=base_type,
+            __module__=__name__,
+            **fields,
+        ),
+    )
+
+
+def _render_result(result: ToolReturnValue) -> str:
     if isinstance(result, str):
         return result
     if result is None:
         return "null"
     if isinstance(result, (bool, int, float)):
         return json.dumps(result)
-    if hasattr(result, "model_dump"):
+    if isinstance(result, BaseModel):
         return json.dumps(result.model_dump(), sort_keys=True, default=str)
     if isinstance(result, (dict, list, tuple)):
         return json.dumps(result, sort_keys=True, default=str)
@@ -533,31 +673,14 @@ def _next_generated_type_name_prefix(tool_name: str) -> str:
     return f"{_pascal_case(tool_name)}{next(_GENERATED_TOOL_TYPE_IDS)}"
 
 
-def flatten_tools(tools: Sequence[Tool]) -> Sequence[Tool]:
-    flattened: list[Tool] = []
-    for tool in tools:
-        if isinstance(tool, ToolSet):
-            flattened.extend(flatten_tools(tool.tools))
-            continue
-        if isinstance(tool, Tool):
-            flattened.append(tool)
-            continue
-        raise TypeError(f"Unsupported tool input: {type(tool)!r}")
-    return tuple(flattened)
-
-
-def default_agent_tools() -> Sequence[Tool]:
-    return (terminal_tool, read_file_tool, apply_patch_tool)
-
-
 def _inspect_tool_signature(
     tool_name: str,
-    function: Callable[..., Any],
-    signature: inspect.Signature,
-) -> tuple[Sequence[inspect.Parameter], Any, bool]:
+    function: Callable[..., ToolReturnValue],
+) -> tuple[Sequence[inspect.Parameter], object, bool]:
     annotations = inspect.get_annotations(function, eval_str=True)
     parameters: list[inspect.Parameter] = []
     accepts_context = False
+    signature = inspect.signature(function)
 
     for index, parameter in enumerate(signature.parameters.values()):
         if parameter.kind in (
@@ -582,15 +705,10 @@ def _inspect_tool_signature(
                 f"Tool function '{tool_name}' parameter '{parameter.name}' must be annotated."
             )
 
-        default = (
-            ...
-            if parameter.default is inspect.Signature.empty
-            else parameter.default
-        )
         parameters.append(
             parameter.replace(
                 annotation=annotation,
-                default=default,
+                default=_parameter_default_for_model_field(parameter),
             )
         )
 
@@ -603,6 +721,15 @@ def _inspect_tool_signature(
     return tuple(parameters), return_annotation, accepts_context
 
 
+def _parameter_default_for_model_field(parameter: inspect.Parameter) -> Any | EllipsisType:
+    # ``inspect.Signature.empty`` is an inspect-only sentinel. ``create_model``
+    # expects ``...`` to mark a required field, so the translation lives here
+    # instead of being smuggled through mutated ``inspect.Parameter`` objects.
+    if parameter.default is inspect.Signature.empty:
+        return _REQUIRED_MODEL_FIELD
+    return parameter.default
+
+
 def _convert_tool(value: Tool | str) -> Tool:
     """Convert a tool object or registered tool name into a ``Tool`` instance."""
     if isinstance(value, Tool):
@@ -612,7 +739,7 @@ def _convert_tool(value: Tool | str) -> Tool:
     raise TypeError(f"Unsupported tool input: {type(value)!r}")
 
 
-def _resolve_registered_tool(name: str) -> FunctionTool[..., Any]:
+def _resolve_registered_tool(name: str) -> Tool:
     tool_instance = _REGISTERED_TOOLS.get(name)
     if tool_instance is not None:
         return tool_instance
@@ -647,7 +774,7 @@ def _build_tool_annotations(
     )
 
 
-def _is_tool_context_annotation(annotation: Any) -> bool:
+def _is_tool_context_annotation(annotation: object) -> bool:
     if annotation is ToolContext:
         return True
 
@@ -656,3 +783,59 @@ def _is_tool_context_annotation(annotation: Any) -> bool:
         return annotated_type is ToolContext
 
     return isinstance(annotation, type) and issubclass(annotation, ToolContext)
+
+
+class _FunctionToolExecutor(ToolExecutor[Action, Observation]):
+    def __init__(
+        self,
+        function: Callable[..., ToolReturnValue],
+        parameter_names: Sequence[str],
+        observation_result_adapter: Callable[[ToolReturnValue], Observation],
+        accepts_context: bool,
+    ) -> None:
+        self._function = function
+        self._parameter_names = tuple(parameter_names)
+        self._observation_result_adapter = observation_result_adapter
+        self._accepts_context = accepts_context
+
+    def __call__(
+        self,
+        action: Action,
+        conversation: BaseConversation | None = None,
+    ) -> Observation:
+        arguments = {
+            parameter_name: getattr(action, parameter_name)
+            for parameter_name in self._parameter_names
+        }
+        if self._accepts_context:
+            result = self._function(
+                ToolContext(conversation=conversation),
+                **arguments,
+            )
+        else:
+            result = self._function(**arguments)
+
+        return self._observation_result_adapter(result)
+
+
+def _coerce_observation_result(
+    observation_type: type[Observation],
+    result: ToolReturnValue,
+) -> Observation:
+    if isinstance(result, Observation):
+        return result
+    return observation_type.model_validate(result)
+
+
+def _wrap_tool_result_in_observation(
+    observation_type: type[Observation],
+    result: ToolReturnValue,
+) -> Observation:
+    # OpenHands only forwards ``Observation.content`` to the model, so plain
+    # return values need synthesized text in addition to the structured result.
+    return observation_type.model_validate(
+        {
+            "result": result,
+            "content": [TextContent(text=_render_result(result))],
+        }
+    )
