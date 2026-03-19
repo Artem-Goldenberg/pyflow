@@ -32,17 +32,17 @@ Responsible for tool definition, composition, and OpenHands compilation:
 
 ### 3. Runtime Model Layer
 
-Responsible for model/provider config:
+Responsible for owning and constructing runtime LLM wrappers:
 
-- `Model` abstract base with `build_llm()`
-- `AIModel` for provider-backed LLM config
-- `TestModel` for scripted offline `TestLLM` runs
+- `Model` abstract base plus public factory surface (`from_api(...)`, `subscription(...)`, `test(...)`)
+- `AIModel` wrapper around one live OpenHands `LLM`
+- `TestModel` wrapper around one live `TestLLM` plus a pyflow-owned scripted-response record
 
 ### 4. Agent Layer
 
 Responsible for executable user-facing object:
 
-- `Agent(model=...)` stores a built OpenHands agent instance
+- `Agent(model=...)` consumes `model.inner_llm` and stores a built OpenHands agent instance
 - Agent-level contexts render as a global prompt preamble
 - Supports sink execution (`request >> agent`) and returns a pyflow `Session`
 
@@ -74,8 +74,9 @@ Type-check-only imports are used to avoid runtime cycles (e.g., `steps.py` refer
 1. User composes `Request` with `>>` and `@`
 2. User executes via sink: `request >> agent` or `request >> model`
 3. Agent renders prompt + global context preamble
-4. OpenHands conversation runs and returns a pyflow `Session`
-5. User can continue the same runtime via `request >> session`
+4. Agent uses the model's owned OpenHands `LLM` to create a fresh conversation run
+5. OpenHands conversation runs and returns a pyflow `Session`
+6. User can continue the same runtime via `request >> session`
 
 ## Planned Extensions
 

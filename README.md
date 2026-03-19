@@ -40,14 +40,14 @@ pytest
 
 ```python
 from pydantic import SecretStr
-from pyflow import AIModel, Agent, code, docs, tests
+from pyflow import Agent, Model, code, docs, tests
 
 request = (
     "Fix the bug." @ docs("plan.md") @ code("app.py")
     >> tests("unit", "integration")
 )
 
-model = AIModel(
+model = Model.from_api(
     name="openai/gpt-4.1",
     base_url="https://api.openai.com/v1",
     api_key=SecretStr("..."),
@@ -60,13 +60,13 @@ raw_conversation = session.conversation
 
 ## Offline Runtime Tests
 
-Use `TestModel` to drive deterministic offline tests without real network requests:
+Use `Model.test(...)` to drive deterministic offline tests without real network requests:
 
 ```python
 from openhands.sdk.llm import Message, TextContent
-from pyflow import Agent, TestModel
+from pyflow import Agent, Model
 
-model = TestModel(
+model = Model.test(
     scripted_responses=(
         Message(role="assistant", content=[TextContent(text="Done")]),
     )
@@ -91,6 +91,8 @@ See:
 ## Notes
 
 - OpenHands imports may emit LiteLLM network-fallback warnings in offline environments; this is expected.
+- Each pyflow model owns one live OpenHands `LLM`, so repeated runs through the same model share metrics and other instance-owned LLM state.
+- `Model.subscription(...)` may perform OpenHands authentication work during model creation.
 - Interactive notebook/REPL workflow is planned but not fully implemented yet.
 
 ## Style Notes

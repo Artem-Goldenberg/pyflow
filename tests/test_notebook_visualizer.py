@@ -9,7 +9,7 @@ import pytest
 from openhands.sdk.conversation.base import ConversationStateProtocol
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
 
-from pyflow import Agent, Session, TestModel, tool
+from pyflow import Agent, Model, Session, TestModel, tool
 from pyflow.notebook_visualizer import (
     NotebookConversationVisualizer,
     build_notebook_conversation_model,
@@ -134,7 +134,7 @@ class _FakeConversationState:
 
 
 def _session_with_rendered_tool_activity() -> Session:
-    model = TestModel(
+    model = Model.test(
         scripted_responses=(
             Message(
                 role="assistant",
@@ -164,7 +164,7 @@ def _session_notebook_sum_tool(a: int, b: int) -> int:
 
 
 def _test_model_with_finishes(*call_ids: str) -> TestModel:
-    return TestModel(
+    return Model.test(
         scripted_responses=tuple(_finish_message(call_id) for call_id in call_ids)
     )
 

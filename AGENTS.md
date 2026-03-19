@@ -39,6 +39,7 @@ The framework should support:
 - Use `TypeVar`/`ParamSpec`/protocols where they improve API safety
 - Prefer dataclasses and abstract base classes when appropriate
 - Keep modules flat and focused
+- In modules, keep public classes/functions above private helpers
 - Keep APIs immutable by default for request composition
 - In DSL expressions that use `@` and `>>`, avoid unnecessary parentheses and keep expressions as bare as possible
 - Prefer `typing.Sequence` in annotations (avoid `tuple[...]` in public API)

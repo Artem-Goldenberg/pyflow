@@ -106,20 +106,22 @@ def test_step_rshift_session_coerces_through_continuation_path() -> None:
     assert returned.conversation is session.conversation
 
 
-def test_session_continuation_does_not_build_fresh_llm() -> None:
-    model = CountingModel(
+def test_two_fresh_runs_share_same_owned_llm() -> None:
+    model = Model.test(
         scripted_responses=(
             _finish_message("first_run"),
             _finish_message("second_run"),
         )
     )
-    agent = Agent(model=model, tools=())
 
-    session = "Do the first pass." >> agent
-    _ = "Do the second pass." >> session
+    first = "Do the first pass." >> model
+    second = "Do the second pass." >> model
 
-    assert isinstance(session, Session)
-    assert model.build_llm_calls == 1
+    assert isinstance(first, Session)
+    assert isinstance(second, Session)
+    assert first.agent.model.inner_llm is model.llm
+    assert second.agent.model.inner_llm is model.llm
+    assert model.llm.call_count == 2
 
 
 def test_session_continuation_appends_plain_request_without_global_context() -> None:
@@ -263,49 +265,136 @@ def test_session_html_shows_pending_confirmation_banner() -> None:
     assert "terminal" in html
 
 
-def test_ai_model_build_llm_maps_fields() -> None:
-    model = AIModel(
+def test_model_from_api_returns_ai_model_and_maps_llm_fields() -> None:
+    model = Model.from_api(
         name="openai/gpt-4.1",
         base_url="https://api.openai.com/v1",
         api_key=SecretStr("test-key"),
+        max_input_tokens=20000,
+        max_output_tokens=567,
+        temperature=0.25,
     )
 
-    llm = model.build_llm()
+    assert isinstance(model, AIModel)
+    assert model.llm.model == "openai/gpt-4.1"
+    assert model.llm.base_url == "https://api.openai.com/v1"
+    assert isinstance(model.llm.api_key, SecretStr)
+    assert model.llm.api_key.get_secret_value() == "test-key"
+    assert model.llm.max_input_tokens == 20000
+    assert model.llm.max_output_tokens == 567
+    assert model.llm.temperature == 0.25
+    assert model.llm.log_completions is True
+    assert model.llm.log_completions_folder == "logs/completions"
 
-    assert llm.model == "openai/gpt-4.1"
-    assert llm.base_url == "https://api.openai.com/v1"
-    assert isinstance(llm.api_key, SecretStr)
-    assert llm.api_key.get_secret_value() == "test-key"
+
+def test_ai_model_direct_wrapper_preserves_llm_identity() -> None:
+    llm = LLM(model="openai/gpt-4.1", api_key=SecretStr("test-key"))
+    model = AIModel(llm=llm)
+
+    assert model.llm is llm
 
 
-def test_test_model_build_llm_uses_scripted_responses() -> None:
+def test_model_subscription_returns_ai_model_and_calls_openhands_helper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sentinel_llm = LLM(model="openai/gpt-5.2-codex", api_key=SecretStr("unused"))
+    captured: dict[str, object] = {}
+
+    def fake_subscription_login(
+        *,
+        vendor: str,
+        model: str,
+        force_login: bool,
+        open_browser: bool,
+        skip_consent: bool,
+        **kwargs: object,
+    ) -> LLM:
+        captured.update(
+            vendor=vendor,
+            model=model,
+            force_login=force_login,
+            open_browser=open_browser,
+            skip_consent=skip_consent,
+            **kwargs,
+        )
+        return sentinel_llm
+
+    monkeypatch.setattr("pyflow.model.LLM.subscription_login", fake_subscription_login)
+
+    model = Model.subscription(
+        vendor="openai",
+        model="gpt-5.2-codex",
+        force_login=True,
+        open_browser=False,
+        skip_consent=True,
+        max_input_tokens=4096,
+        max_output_tokens=1024,
+        temperature=0.5,
+    )
+
+    assert isinstance(model, AIModel)
+    assert model.llm is sentinel_llm
+    assert captured == {
+        "vendor": "openai",
+        "model": "gpt-5.2-codex",
+        "force_login": True,
+        "open_browser": False,
+        "skip_consent": True,
+        "max_input_tokens": 4096,
+        "max_output_tokens": 1024,
+        "temperature": 0.5,
+        "log_completions": True,
+        "log_completions_folder": "logs/completions",
+    }
+
+
+def test_model_test_returns_test_model_with_stable_scripted_responses() -> None:
     scripted = (
         Message(role="assistant", content=[TextContent(text="First")]),
         RuntimeError("boom"),
     )
-    model = TestModel(scripted_responses=scripted, name="scripted-test")
-    llm = model.build_llm()
+    model = Model.test(
+        scripted_responses=scripted,
+        name="scripted-test",
+        max_output_tokens=321,
+    )
     user_message = Message(role="user", content=[TextContent(text="Hi")])
 
-    first = llm.completion([user_message])
+    first = model.llm.completion([user_message])
 
-    assert isinstance(llm, TestLLM)
-    assert llm.model == "scripted-test"
+    assert isinstance(model, TestModel)
+    assert isinstance(model.llm, TestLLM)
+    assert model.llm.model == "scripted-test"
+    assert model.llm.max_output_tokens == 321
+    assert model.scripted_responses == scripted
     assert _content_as_text(first.message) == "First"
-    assert llm.call_count == 1
+    assert model.llm.call_count == 1
 
     with pytest.raises(RuntimeError, match="boom"):
-        llm.completion([user_message])
+        model.llm.completion([user_message])
 
-    assert llm.call_count == 2
-    assert llm.remaining_responses == 0
+    assert model.llm.call_count == 2
+    assert model.llm.remaining_responses == 0
+    assert model.scripted_responses == scripted
 
     with pytest.raises(TestLLMExhaustedError):
-        llm.completion([user_message])
+        model.llm.completion([user_message])
+
+
+def test_test_model_direct_wrapper_preserves_llm_and_scripted_responses() -> None:
+    scripted = (
+        Message(role="assistant", content=[TextContent(text="First")]),
+        RuntimeError("boom"),
+    )
+    llm = TestLLM.from_messages(messages=list(scripted), model="scripted-test")
+    model = TestModel(llm=llm, scripted_responses=scripted)
+
+    assert model.llm is llm
+    assert model.scripted_responses == scripted
 
 
 def test_agent_builds_openhands_agent_with_test_model_llm() -> None:
-    model = TestModel(
+    model = Model.test(
         scripted_responses=(
             Message(role="assistant", content=[TextContent(text="Done")]),
         )
@@ -315,10 +404,11 @@ def test_agent_builds_openhands_agent_with_test_model_llm() -> None:
     openhands_agent = agent._build_openhands_agent()
 
     assert isinstance(openhands_agent.llm, TestLLM)
+    assert openhands_agent.llm is model.llm
 
 
 def test_agent_render_message_with_context(snapshot_regen: bool) -> None:
-    model = TestModel(
+    model = Model.test(
         scripted_responses=(
             Message(role="assistant", content=[TextContent(text="Done")]),
         )
@@ -332,7 +422,7 @@ def test_agent_render_message_with_context(snapshot_regen: bool) -> None:
 
 
 def test_agent_workspace_defaults_to_cwd() -> None:
-    model = TestModel(
+    model = Model.test(
         scripted_responses=(
             Message(role="assistant", content=[TextContent(text="Done")]),
         )
@@ -340,20 +430,6 @@ def test_agent_workspace_defaults_to_cwd() -> None:
     agent = Agent(model=model)
 
     assert agent.workspace == Path.cwd()
-
-
-@dataclass(frozen=True, kw_only=True)
-class CountingModel(Model):
-    scripted_responses: Sequence[Message | Exception]
-    name: str = "counting-test-model"
-    build_llm_calls: int = 0
-
-    def build_llm(self) -> LLM:
-        object.__setattr__(self, "build_llm_calls", self.build_llm_calls + 1)
-        return TestLLM.from_messages(
-            messages=list(self.scripted_responses),
-            model=self.name,
-        )
 
 
 class CaptureSink:
@@ -412,7 +488,9 @@ class _FakeNotebookShell:
 
 
 def _test_model_with_finishes(*call_ids: str) -> TestModel:
-    return TestModel(scripted_responses=tuple(_finish_message(call_id) for call_id in call_ids))
+    return Model.test(
+        scripted_responses=tuple(_finish_message(call_id) for call_id in call_ids)
+    )
 
 
 def _agent_with_finishes(*call_ids: str) -> Agent:
@@ -422,7 +500,7 @@ def _agent_with_finishes(*call_ids: str) -> Agent:
 
 
 def _session_with_rendered_tool_activity() -> Session:
-    model = TestModel(
+    model = Model.test(
         scripted_responses=(
             Message(
                 role="assistant",

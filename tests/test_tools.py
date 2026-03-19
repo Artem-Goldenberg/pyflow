@@ -24,6 +24,7 @@ from openhands.tools.terminal.definition import TerminalAction, TerminalObservat
 from pyflow import (
     Agent,
     FunctionTool,
+    Model,
     PromptStep,
     Request,
     Session,
@@ -274,7 +275,7 @@ def test_function_tool_injects_tool_context_and_excludes_it_from_schema() -> Non
         observed_contexts.append(ctx)
         return value.upper()
 
-    model = TestModel(
+    model = Model.test(
         scripted_responses=(
             Message(
                 role="assistant",
@@ -559,7 +560,7 @@ def test_function_tool_executes_via_openhands_tool_loop() -> None:
         """Add two integers."""
         return a + b
 
-    model = TestModel(
+    model = Model.test(
         scripted_responses=(
             Message(
                 role="assistant",
@@ -606,7 +607,7 @@ def test_function_tool_renders_pydantic_result_as_json_text() -> None:
         """Return a Pydantic model result."""
         return _StructuredResult(count=len(value), value=value.upper())
 
-    model = TestModel(
+    model = Model.test(
         scripted_responses=(
             Message(
                 role="assistant",
@@ -647,7 +648,7 @@ def test_session_continuation_does_not_register_request_attached_tools() -> None
         """Return the provided text unchanged."""
         return value
 
-    model = TestModel(
+    model = Model.test(
         scripted_responses=(
             _finish_message("first_run"),
             _finish_message("second_run"),
@@ -664,7 +665,7 @@ def test_session_continuation_does_not_register_request_attached_tools() -> None
 
 
 def _empty_test_model() -> TestModel:
-    return TestModel(scripted_responses=())
+    return Model.test(scripted_responses=())
 
 
 def _prompt_request(text: str) -> Request:

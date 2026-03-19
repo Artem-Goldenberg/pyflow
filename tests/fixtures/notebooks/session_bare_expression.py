@@ -1,9 +1,9 @@
 # pyright: reportUnusedExpression=false
 # %%
-from pyflow import Agent, TestModel
+from pyflow import Agent, Model
 from openhands.sdk.llm import Message, MessageToolCall, TextContent
 
-model = TestModel(
+model = Model.test(
     scripted_responses=(
         Message(
             role="assistant",

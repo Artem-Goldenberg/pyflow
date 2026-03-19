@@ -27,7 +27,7 @@ class Agent:
     Pyflow runtime sink backed by a fresh OpenHands agent per run.
 
     Attributes:
-        model: Pyflow model used to build an OpenHands LLM.
+        model: Pyflow model that owns the OpenHands LLM used for execution.
         contexts: Contexts rendered globally before request steps.
         tools: Tools attached to every run.
         workspace: OpenHands workspace path for execution.
@@ -115,7 +115,7 @@ class Agent:
     def _build_openhands_agent(self) -> OpenHandsAgent:
         tool_specs = compile_openhands_tools(self.tools)
         return OpenHandsAgent(
-            llm=self.model.build_llm(),
+            llm=self.model.inner_llm,
             tools=list(tool_specs),
             system_prompt_kwargs={"cli_mode": True},
         )

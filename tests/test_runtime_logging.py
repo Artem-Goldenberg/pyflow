@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from pyflow import Agent, TestModel
+from pyflow import Agent, Model
 from pyflow.notebook_visualizer import NotebookConversationVisualizer
 from pyflow.runtime_logging import (
     apply_default_jupyter_backend_log_policy,
@@ -87,7 +87,7 @@ def test_agent_run_uses_environment_visualizer_helper(
     monkeypatch.setattr("pyflow.agent.sync_interactive_session", lambda session: None)
 
     _ = "Inspect notebook log noise." >> Agent(
-        model=TestModel(scripted_responses=(), name="unused"),
+        model=Model.test(scripted_responses=(), name="unused"),
         tools=(),
     )
 
