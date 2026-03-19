@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import importlib
-
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Sequence
 
@@ -70,8 +68,14 @@ class Session:
         """Render the session transcript as notebook-friendly HTML."""
         return self.transcript.render_html()
 
+    def render_markdown(self) -> str:
+        """Render the session transcript as notebook-friendly Markdown."""
+        from pyflow.notebook_visualizer import notebook_markdown_for_session
+
+        return notebook_markdown_for_session(self)
+
     def render_widget(self) -> object:
-        """Render the session transcript as an ipywidgets notebook view."""
+        """Render the session transcript as a read-only ipywidgets notebook view."""
         from pyflow.notebook_visualizer import notebook_widget_for_session
 
         return notebook_widget_for_session(self)
@@ -83,15 +87,35 @@ class Session:
     def display_html(self) -> None:
         """Display the HTML transcript in IPython/Jupyter environments."""
         try:
-            display_module = importlib.import_module("IPython.display")
+            from IPython.display import HTML, display
         except ImportError as exc:
             raise RuntimeError("IPython is required for Session.display_html().") from exc
 
-        html_factory = getattr(display_module, "HTML", None)
-        display = getattr(display_module, "display", None)
-        if not callable(html_factory) or not callable(display):
-            raise RuntimeError("IPython.display is missing HTML display helpers.")
-        display(html_factory(self.render_html()))
+        display(HTML(self.render_html()))
+
+    def display_markdown(self) -> None:
+        """Display the Markdown transcript in IPython/Jupyter environments."""
+        try:
+            from IPython.display import display_markdown
+        except ImportError as exc:
+            raise RuntimeError(
+                "IPython is required for Session.display_markdown()."
+            ) from exc
+
+        display_markdown(self.render_markdown(), raw=True)
+
+    def _ipython_display_(self) -> None:
+        """High-level IPython/Jupyter display hook."""
+        if detect_display_environment() is not DisplayEnvironment.JUPYTER:
+            return
+        if should_suppress_notebook_display(self):
+            return
+        try:
+            from IPython.display import display_markdown
+        except ImportError as exc:
+            raise RuntimeError("IPython is required for notebook display.") from exc
+
+        display_markdown(self.render_markdown(), raw=True)
 
     def approve_pending_actions(self) -> Session:
         """Continue execution, approving any pending confirmation step."""
@@ -137,7 +161,17 @@ class Session:
         """HTML representation used by IPython/Jupyter frontends."""
         if should_suppress_notebook_display(self):
             return ""
+        if detect_display_environment() is DisplayEnvironment.JUPYTER:
+            return ""
         return self.render_html()
+
+    def _repr_markdown_(self) -> str:
+        """Markdown representation used by IPython/Jupyter frontends."""
+        if should_suppress_notebook_display(self):
+            return ""
+        if detect_display_environment() is DisplayEnvironment.JUPYTER:
+            return self.render_markdown()
+        return ""
 
     def _repr_mimebundle_(
         self,

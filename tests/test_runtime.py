@@ -238,7 +238,7 @@ def test_session_repr_mimebundle_suppresses_immediate_notebook_echo(
     assert suppressed == {}
     assert suppressed_html == ""
     assert displayed["text/plain"] == session.render()
-    assert "application/vnd.jupyter.widget-view+json" in displayed
+    assert displayed["text/markdown"] == session.render_markdown()
 
 
 def test_session_html_shows_pending_confirmation_banner() -> None:
@@ -345,6 +345,7 @@ def test_model_subscription_returns_ai_model_and_calls_openhands_helper(
         "temperature": 0.5,
         "log_completions": True,
         "log_completions_folder": "logs/completions",
+        "prompt_cache_retention": None,
     }
 
 

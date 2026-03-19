@@ -11,22 +11,28 @@ def test_notebook_assignment_then_session_renders_widget_in_both_cells() -> None
     notebook = _notebook_from_fixture("session_assignment_then_render.py")
 
     executed = _execute_notebook_or_skip(notebook)
-    assignment_output = executed.cells[1].outputs[0]
+    assignment_outputs = executed.cells[1].outputs
     session_output = executed.cells[2].outputs[0]
 
-    assert assignment_output.output_type == "display_data"
-    assert "application/vnd.jupyter.widget-view+json" in assignment_output.data
-
-    assert session_output.output_type == "execute_result"
-    assert "application/vnd.jupyter.widget-view+json" in session_output.data
-    assert "text/plain" in session_output.data
-    assert "User:" in session_output.data["text/plain"]
-    assert "Hi" in session_output.data["text/plain"]
-
-    assert (
-        assignment_output.data["application/vnd.jupyter.widget-view+json"]["model_id"]
-        == session_output.data["application/vnd.jupyter.widget-view+json"]["model_id"]
+    transcript_output = _output_with_mime(assignment_outputs, "text/markdown")
+    controls_output = _output_with_mime(
+        assignment_outputs,
+        "application/vnd.jupyter.widget-view+json",
     )
+
+    assert transcript_output.output_type == "display_data"
+    assert "## pyflow session" in transcript_output.data["text/markdown"]
+    assert "### User" in transcript_output.data["text/markdown"]
+    assert "Hi" in transcript_output.data["text/markdown"]
+    assert controls_output.output_type == "display_data"
+
+    assert session_output.output_type == "display_data"
+    assert "text/markdown" in session_output.data
+    assert "## pyflow session" in session_output.data["text/markdown"]
+    assert "### User" in session_output.data["text/markdown"]
+    assert "Hi" in session_output.data["text/markdown"]
+
+    assert "application/vnd.jupyter.widget-view+json" not in session_output.data
 
 
 def test_notebook_bare_expression_hides_the_session_auto_display_payload() -> None:
@@ -36,11 +42,26 @@ def test_notebook_bare_expression_hides_the_session_auto_display_payload() -> No
     outputs = executed.cells[1].outputs
 
     assert len(outputs) == 2
-    assert outputs[0].output_type == "display_data"
-    assert "application/vnd.jupyter.widget-view+json" in outputs[0].data
-    assert outputs[1].output_type == "execute_result"
-    assert outputs[1].data["text/plain"] == ""
-    assert outputs[1].data["text/html"] == ""
+    transcript_output = _output_with_mime(outputs, "text/markdown")
+    controls_output = _output_with_mime(
+        outputs,
+        "application/vnd.jupyter.widget-view+json",
+    )
+
+    assert transcript_output.output_type == "display_data"
+    assert "## pyflow session" in transcript_output.data["text/markdown"]
+    assert controls_output.output_type == "display_data"
+
+
+def _output_with_mime(
+    outputs: list[nbformat.NotebookNode],
+    mime_type: str,
+) -> nbformat.NotebookNode:
+    for output in outputs:
+        data = output.get("data", {})
+        if mime_type in data:
+            return output
+    raise AssertionError(f"No notebook output contained MIME type {mime_type!r}")
 
 
 def _execute_notebook_or_skip(

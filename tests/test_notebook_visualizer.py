@@ -13,6 +13,7 @@ from pyflow import Agent, Model, Session, TestModel, tool
 from pyflow.notebook_visualizer import (
     NotebookConversationVisualizer,
     build_notebook_conversation_model,
+    notebook_markdown_for_session,
 )
 
 
@@ -81,29 +82,62 @@ def test_notebook_visualizer_updates_widget_live() -> None:
     state.execution_status = SimpleNamespace(value="finished")
     visualizer.refresh()
 
-    assert display_target.display_calls == len(session.events) + 1
+    assert display_target.transcript_calls == len(session.events) + 1
+    assert display_target.control_calls == len(session.events) + 1
     assert all(widget is visualizer.widget for widget in display_target.widgets)
     assert isinstance(visualizer.widget, widgets.VBox)
+    assert "## pyflow session" in display_target.transcripts[-1]
+    assert "Tool `session_notebook_sum_tool_test`" in display_target.transcripts[-1]
+    assert any(
+        isinstance(descendant, widgets.Text)
+        for descendant in _flatten_widgets(visualizer.widget)
+    )
 
-    header = cast(widgets.HBox, visualizer.widget.children[1])
-    title = cast(widgets.HTML, header.children[0])
-    status = cast(widgets.HTML, header.children[1])
 
-    assert "Conversation Transcript" in title.value
-    assert "Finished" in status.value
+def test_notebook_markdown_for_session_is_read_only_transcript() -> None:
+    session = _session_with_rendered_tool_activity()
+
+    markdown = notebook_markdown_for_session(session)
+
+    assert "## pyflow session" in markdown
+    assert "### User" in markdown
+    assert "### Agent" in markdown
+    assert "<details>" in markdown
+    assert "Tool `session_notebook_sum_tool_test`" in markdown
+    assert "Continue the conversation" not in markdown
+
+
+def test_session_render_widget_is_read_only() -> None:
+    session = _session_with_rendered_tool_activity()
+
+    widget = cast(widgets.VBox, session.render_widget())
+
+    assert isinstance(widget, widgets.VBox)
+    assert not any(
+        isinstance(descendant, (widgets.Text, widgets.Textarea))
+        for descendant in _flatten_widgets(widget)
+    )
 
 
 @dataclass
 class _CaptureWidgetTarget:
+    transcripts: list[str]
     widgets: list[widgets.Widget]
-    display_calls: int
+    transcript_calls: int
+    control_calls: int
 
     def __init__(self) -> None:
+        self.transcripts = []
         self.widgets = []
-        self.display_calls = 0
+        self.transcript_calls = 0
+        self.control_calls = 0
 
-    def display(self, widget: widgets.Widget) -> None:
-        self.display_calls += 1
+    def display_transcript(self, markdown: str) -> None:
+        self.transcript_calls += 1
+        self.transcripts.append(markdown)
+
+    def display_controls(self, widget: widgets.Widget) -> None:
+        self.control_calls += 1
         self.widgets.append(widget)
 
 
@@ -182,3 +216,12 @@ def _finish_message(call_id: str, message: str = "Done") -> Message:
             )
         ],
     )
+
+
+def _flatten_widgets(widget: widgets.Widget) -> list[widgets.Widget]:
+    widgets_found = [widget]
+    children = getattr(widget, "children", ())
+    for child in children:
+        if isinstance(child, widgets.Widget):
+            widgets_found.extend(_flatten_widgets(child))
+    return widgets_found

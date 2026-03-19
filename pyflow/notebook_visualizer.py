@@ -7,7 +7,7 @@ from html import escape
 from typing import TYPE_CHECKING, Callable, Literal, Protocol, Sequence, cast
 
 import ipywidgets as widgets
-from IPython.display import Markdown, display
+from IPython.display import DisplayHandle, Markdown, display, display_markdown
 from openhands.sdk.conversation.visualizer.base import ConversationVisualizerBase
 from openhands.sdk.event import (
     ACPToolCallEvent,
@@ -65,7 +65,9 @@ class NotebookConversationModel:
 
 
 class NotebookDisplayTarget(Protocol):
-    def display(self, widget: widgets.Widget) -> None: ...
+    def display_transcript(self, markdown: str) -> None: ...
+
+    def display_controls(self, widget: widgets.Widget) -> None: ...
 
 
 class _ConversationWithVisualizer(Protocol):
@@ -73,35 +75,33 @@ class _ConversationWithVisualizer(Protocol):
 
 
 class NotebookConversationVisualizer(ConversationVisualizerBase):
-    """Notebook visualizer backed by a persistent ipywidgets view."""
+    """Notebook visualizer backed by a Markdown display plus minimal controls."""
 
-    _display_target: NotebookDisplayTarget | None
+    _display_target: NotebookDisplayTarget
     _events: list[Event]
     _seeded_from_state: bool
-    _session_widget: NotebookSessionWidget
+    _controls: NotebookLiveControls
 
     def __init__(
         self,
         *,
         display_target: NotebookDisplayTarget | None = None,
-        session_widget: NotebookSessionWidget | None = None,
+        controls: NotebookLiveControls | None = None,
     ) -> None:
         super().__init__()
         self._display_target = (
-            display_target if display_target is not None else _IPythonWidgetTarget()
+            display_target if display_target is not None else _IPythonNotebookTarget()
         )
-        self._session_widget = (
-            session_widget if session_widget is not None else NotebookSessionWidget()
-        )
+        self._controls = controls if controls is not None else NotebookLiveControls()
         self._events = []
         self._seeded_from_state = False
 
     @property
     def widget(self) -> widgets.Widget:
-        return self._session_widget.widget
+        return self._controls.widget
 
     def bind_session(self, session: Session) -> None:
-        self._session_widget.bind_session(session)
+        self._controls.bind_session(session)
 
     def on_event(self, event: Event) -> None:
         self._seed_events_from_state()
@@ -109,14 +109,24 @@ class NotebookConversationVisualizer(ConversationVisualizerBase):
         self.refresh()
 
     def refresh(self) -> None:
-        """Refresh the live notebook widget from current conversation state."""
         model = build_notebook_conversation_model(
             self._current_events(),
             execution_status=_execution_status(self._state),
         )
-        self._session_widget.render(model)
-        if self._display_target is not None:
-            self._display_target.display(self._session_widget.widget)
+        self._render_model(model)
+
+    def sync_session(self, session: Session) -> None:
+        self.bind_session(session)
+        model = build_notebook_conversation_model(
+            session.events,
+            execution_status=session.execution_status,
+        )
+        self._render_model(model)
+
+    def _render_model(self, model: NotebookConversationModel) -> None:
+        self._controls.update_status(model.execution_status)
+        self._display_target.display_transcript(render_notebook_markdown(model))
+        self._display_target.display_controls(self._controls.widget)
 
     def _seed_events_from_state(self) -> None:
         if self._seeded_from_state or self._state is None:
@@ -130,104 +140,63 @@ class NotebookConversationVisualizer(ConversationVisualizerBase):
         return list(self._state.events)
 
 
-class NotebookSessionWidget:
-    """Reusable widget tree for live notebook visualization and session display."""
+class NotebookLiveControls:
+    """Minimal live controls shown under the notebook transcript."""
 
     _session: Session | None
-    _model: NotebookConversationModel | None
-    _style: widgets.HTML
-    _title: widgets.HTML
-    _status: widgets.HTML
-    _banner: widgets.HTML
-    _transcript: widgets.VBox
-    _composer: widgets.Textarea
+    _composer: widgets.Text
     _send_button: widgets.Button
     _approve_button: widgets.Button
     _reject_button: widgets.Button
-    _feedback: widgets.HTML
+    _feedback: widgets.Label
+    _status: str | None
     _widget: widgets.VBox
 
     def __init__(self) -> None:
         self._session = None
-        self._model = None
-        self._style = widgets.HTML(_NOTEBOOK_WIDGET_STYLE)
-        self._title = widgets.HTML()
-        self._status = widgets.HTML()
-        self._banner = widgets.HTML()
-        self._banner.layout.display = "none"
-        self._transcript = widgets.VBox()
-        self._transcript.add_class("pyflow-notebook__stack")
-        self._composer = widgets.Textarea(
+        self._status = None
+        self._composer = widgets.Text(
             placeholder="Continue the conversation…",
-            rows=3,
             layout=widgets.Layout(width="100%"),
         )
-        self._composer.add_class("pyflow-notebook__textarea")
         self._send_button = widgets.Button(
-            description="Send",
-            button_style="primary",
-            icon="paper-plane",
+            description="",
+            icon="arrow-up",
+            tooltip="Send",
+            layout=widgets.Layout(width="40px"),
         )
         self._approve_button = widgets.Button(
-            description="Approve",
-            button_style="success",
+            description="",
             icon="check",
+            tooltip="Approve pending action",
+            layout=widgets.Layout(width="40px"),
         )
         self._reject_button = widgets.Button(
-            description="Reject",
-            button_style="danger",
+            description="",
             icon="times",
+            tooltip="Reject pending action",
+            layout=widgets.Layout(width="40px"),
         )
-        self._feedback = widgets.HTML()
-        self._feedback.layout.display = "none"
+        self._feedback = widgets.Label()
+        self._widget = widgets.VBox(
+            [
+                widgets.HBox(
+                    [
+                        self._composer,
+                        self._send_button,
+                        self._approve_button,
+                        self._reject_button,
+                    ],
+                    layout=widgets.Layout(width="100%", align_items="center"),
+                ),
+                self._feedback,
+            ]
+        )
 
         self._send_button.on_click(self._on_send)
         self._approve_button.on_click(self._on_approve)
         self._reject_button.on_click(self._on_reject)
-
-        header = widgets.HBox(
-            [self._title, self._status],
-            layout=widgets.Layout(
-                width="100%",
-                justify_content="space-between",
-                align_items="flex-start",
-            ),
-        )
-        header.add_class("pyflow-notebook__header")
-
-        controls = widgets.HBox(
-            [self._send_button, self._approve_button, self._reject_button],
-            layout=widgets.Layout(flex_flow="row wrap"),
-        )
-        controls.add_class("pyflow-notebook__controls")
-
-        composer_box = widgets.VBox(
-            [
-                widgets.HTML(
-                    '<div class="pyflow-notebook__composer-label">'
-                    "Continue This Session"
-                    "</div>"
-                ),
-                self._composer,
-                controls,
-                self._feedback,
-            ],
-        )
-        composer_box.add_class("pyflow-notebook__composer")
-        composer_box.add_class("pyflow-notebook__stack")
-
-        self._widget = widgets.VBox(
-            [
-                self._style,
-                header,
-                self._banner,
-                self._transcript,
-                composer_box,
-            ],
-            layout=widgets.Layout(width="100%"),
-        )
-        self._widget.add_class("pyflow-notebook")
-        self._widget.add_class("pyflow-notebook__stack")
+        self._update_controls(None)
 
     @property
     def widget(self) -> widgets.Widget:
@@ -235,50 +204,29 @@ class NotebookSessionWidget:
 
     def bind_session(self, session: Session) -> None:
         self._session = session
+        self._clear_feedback()
 
-    def render(self, model: NotebookConversationModel) -> None:
-        self._model = model
-        self._title.value = _header_markup(model)
-        self._status.value = _status_badge_markup(model.execution_status)
-        banner_markup = _banner_markup(model)
-        if banner_markup:
-            self._banner.value = banner_markup
-            self._banner.layout.display = ""
-        else:
-            self._banner.value = ""
-            self._banner.layout.display = "none"
-
-        self._transcript.children = tuple(_turn_widget(turn) for turn in model.turns) or (
-            widgets.HTML(
-                '<div class="pyflow-notebook__empty">'
-                "Session has no recorded events."
-                "</div>"
-            ),
-        )
-        self._update_controls(model.execution_status)
-
-    def mimebundle(self, *, text_plain: str) -> dict[str, object]:
-        bundle = cast(dict[str, object], self._widget._repr_mimebundle_())
-        bundle["text/plain"] = text_plain
-        return bundle
+    def update_status(self, execution_status: str | None) -> None:
+        self._status = execution_status
+        self._update_controls(execution_status)
 
     def _on_send(self, _: widgets.Button) -> None:
         if self._session is None:
-            self._set_feedback("The session is not attached to this widget yet.")
+            self._set_feedback("Session is not attached to this live view yet.")
             return
 
-        session = self._session
         prompt = self._composer.value.strip()
         if not prompt:
             self._set_feedback("Enter a message before sending.")
             return
 
+        session = self._session
         self._run_session_action(lambda: prompt >> session)
         self._composer.value = ""
 
     def _on_approve(self, _: widgets.Button) -> None:
         if self._session is None:
-            self._set_feedback("The session is not attached to this widget yet.")
+            self._set_feedback("Session is not attached to this live view yet.")
             return
 
         session = self._session
@@ -286,17 +234,20 @@ class NotebookSessionWidget:
 
     def _on_reject(self, _: widgets.Button) -> None:
         if self._session is None:
-            self._set_feedback("The session is not attached to this widget yet.")
+            self._set_feedback("Session is not attached to this live view yet.")
             return
 
+        reason = "User rejected the action"
+        if self._composer.value.strip():
+            reason = self._composer.value.strip()
+
         session = self._session
-        reason = self._composer.value.strip() or "User rejected the action"
         self._run_session_action(lambda: session.reject_pending_actions(reason))
         if self._composer.value.strip():
             self._composer.value = ""
 
     def _run_session_action(self, action: Callable[[], object]) -> None:
-        self._set_feedback("Running…", pending=True)
+        self._set_feedback("Running…")
         self._set_busy(True)
         try:
             action()
@@ -305,14 +256,13 @@ class NotebookSessionWidget:
             self._set_feedback(f"{type(exc).__name__}: {exc}")
             raise
         finally:
-            if self._model is not None:
-                self._update_controls(self._model.execution_status)
+            self._update_controls(self._status)
 
     def _set_busy(self, is_busy: bool) -> None:
+        self._composer.disabled = is_busy
         self._send_button.disabled = is_busy
         self._approve_button.disabled = is_busy
         self._reject_button.disabled = is_busy
-        self._composer.disabled = is_busy
 
     def _update_controls(self, execution_status: str | None) -> None:
         normalized = _normalize_status_value(execution_status)
@@ -329,33 +279,65 @@ class NotebookSessionWidget:
         }
         self._reject_button.disabled = normalized != "waiting_for_confirmation"
 
-    def _set_feedback(self, message: str, *, pending: bool = False) -> None:
-        feedback_class = (
-            "pyflow-notebook__feedback pyflow-notebook__feedback--pending"
-            if pending
-            else "pyflow-notebook__feedback"
-        )
-        self._feedback.value = (
-            f'<div class="{feedback_class}">{escape(message)}</div>'
-        )
-        self._feedback.layout.display = ""
+    def _set_feedback(self, message: str) -> None:
+        self._feedback.value = message
 
     def _clear_feedback(self) -> None:
         self._feedback.value = ""
-        self._feedback.layout.display = "none"
 
 
-class _IPythonWidgetTarget:
-    _displayed: bool
+class NotebookSessionWidget:
+    """Read-only notebook widget fallback for explicit widget rendering."""
+
+    _output: widgets.Output
+    _widget: widgets.VBox
+    _last_markdown: str | None
 
     def __init__(self) -> None:
-        self._displayed = False
+        self._output = widgets.Output()
+        self._widget = widgets.VBox([self._output])
+        self._last_markdown = None
 
-    def display(self, widget: widgets.Widget) -> None:
-        if self._displayed:
+    @property
+    def widget(self) -> widgets.Widget:
+        return self._widget
+
+    def render(self, markdown: str) -> None:
+        if markdown == self._last_markdown:
+            return
+        self._last_markdown = markdown
+        self._output.clear_output(wait=True)
+        with self._output:
+            display_markdown(markdown, raw=True)
+
+    def mimebundle(self, *, text_plain: str, text_markdown: str) -> dict[str, object]:
+        return {
+            "text/plain": text_plain,
+            "text/markdown": text_markdown,
+        }
+
+
+class _IPythonNotebookTarget:
+    _transcript_handle: DisplayHandle | None
+    _controls_displayed: bool
+
+    def __init__(self) -> None:
+        self._transcript_handle = None
+        self._controls_displayed = False
+
+    def display_transcript(self, markdown: str) -> None:
+        if self._transcript_handle is None:
+            handle = DisplayHandle()
+            handle.display(Markdown(markdown))
+            self._transcript_handle = handle
+            return
+        self._transcript_handle.update(Markdown(markdown))
+
+    def display_controls(self, widget: widgets.Widget) -> None:
+        if self._controls_displayed:
             return
         display(widget)
-        self._displayed = True
+        self._controls_displayed = True
 
 
 def build_notebook_conversation_model(
@@ -526,14 +508,57 @@ def build_notebook_conversation_model(
     return NotebookConversationModel(turns=turns, execution_status=execution_status)
 
 
-def notebook_widget_for_session(session: Session) -> widgets.Widget:
-    widget = _session_widget_for_session(session)
-    widget.render(
+def render_notebook_markdown(model: NotebookConversationModel) -> str:
+    if not model.turns:
+        return "## pyflow session\n\n_Session has no recorded events._"
+
+    tool_count = sum(len(turn.tool_calls) for turn in model.turns)
+    summary = (
+        f"{len(model.turns)} turn{'s' if len(model.turns) != 1 else ''}"
+        f" · {tool_count} tool call{'s' if tool_count != 1 else ''}"
+    )
+    status = _format_status_label(_normalize_status_value(model.execution_status))
+
+    parts = [
+        "## pyflow session",
+        "",
+        f"Status: **{status}**",
+        "",
+        summary,
+    ]
+
+    banner = _banner_markdown(model)
+    if banner:
+        parts.extend(["", banner])
+
+    for turn in model.turns:
+        parts.extend(["", f"### {_role_label(turn.role)}"])
+
+        messages = turn.messages or ["_No direct message content._"]
+        for message in messages:
+            parts.extend(["", message])
+
+        for section in turn.sections:
+            parts.extend(["", _details_block(section.title, _section_body(section))])
+
+        for tool_call in turn.tool_calls:
+            parts.extend(["", _tool_call_block(tool_call)])
+
+    return "\n".join(parts).strip()
+
+
+def notebook_markdown_for_session(session: Session) -> str:
+    return render_notebook_markdown(
         build_notebook_conversation_model(
             session.events,
             execution_status=session.execution_status,
         )
     )
+
+
+def notebook_widget_for_session(session: Session) -> widgets.Widget:
+    widget = _read_only_widget_for_session(session)
+    widget.render(notebook_markdown_for_session(session))
     return widget.widget
 
 
@@ -544,36 +569,27 @@ def notebook_mimebundle_for_session(
     exclude: Sequence[str] | None = None,
 ) -> dict[str, object]:
     del include, exclude
-    widget = _session_widget_for_session(session)
-    widget.render(
-        build_notebook_conversation_model(
-            session.events,
-            execution_status=session.execution_status,
-        )
+    widget = _read_only_widget_for_session(session)
+    markdown = notebook_markdown_for_session(session)
+    widget.render(markdown)
+    return widget.mimebundle(
+        text_plain=session.render(),
+        text_markdown=markdown,
     )
-    return widget.mimebundle(text_plain=session.render())
 
 
 def sync_notebook_session(session: Session) -> None:
-    widget = _session_widget_for_session(session)
-    widget.bind_session(session)
-    widget.render(
-        build_notebook_conversation_model(
-            session.events,
-            execution_status=session.execution_status,
-        )
-    )
-
-
-def _session_widget_for_session(session: Session) -> NotebookSessionWidget:
     visualizer = _conversation_visualizer(session.conversation)
     if isinstance(visualizer, NotebookConversationVisualizer):
-        visualizer.bind_session(session)
-        return visualizer._session_widget
+        visualizer.sync_session(session)
 
+    if session._notebook_widget is not None:
+        session._notebook_widget.render(notebook_markdown_for_session(session))
+
+
+def _read_only_widget_for_session(session: Session) -> NotebookSessionWidget:
     if session._notebook_widget is None:
         session._notebook_widget = NotebookSessionWidget()
-    session._notebook_widget.bind_session(session)
     return session._notebook_widget
 
 
@@ -637,131 +653,7 @@ def _upsert_section(
     sections.append(new_section)
 
 
-def _turn_widget(turn: NotebookTurn) -> widgets.Widget:
-    bubble_children: list[widgets.Widget] = []
-
-    if turn.messages:
-        bubble_children.extend(_markdown_block(message) for message in turn.messages)
-
-    if turn.sections:
-        detail_box = widgets.VBox(
-            [_section_widget(section) for section in turn.sections],
-        )
-        detail_box.add_class("pyflow-notebook__stack")
-        details = widgets.Accordion(children=[detail_box], selected_index=None)
-        details.set_title(0, "Details")
-        details.add_class("pyflow-notebook__accordion")
-        bubble_children.append(details)
-
-    for tool_call in turn.tool_calls:
-        bubble_children.append(_tool_call_widget(tool_call))
-
-    if not bubble_children:
-        bubble_children.append(
-            widgets.HTML('<div class="pyflow-notebook__empty-turn">[empty]</div>')
-        )
-
-    bubble = widgets.VBox(bubble_children)
-    bubble.add_class("pyflow-notebook__bubble")
-    bubble.add_class(f"pyflow-notebook__bubble--{turn.role}")
-    bubble.add_class("pyflow-notebook__stack")
-
-    row = widgets.HBox(
-        [bubble],
-        layout=widgets.Layout(
-            width="100%",
-            justify_content="flex-end" if turn.role == "user" else "flex-start",
-        ),
-    )
-    row.add_class("pyflow-notebook__row")
-    row.add_class(f"pyflow-notebook__row--{turn.role}")
-    return row
-
-
-def _tool_call_widget(tool_call: NotebookToolCall) -> widgets.Widget:
-    details_children: list[widgets.Widget] = []
-    summary_markup = _tool_summary_markup(tool_call)
-    if summary_markup:
-        details_children.append(widgets.HTML(summary_markup))
-
-    details_children.extend(_section_widget(section) for section in tool_call.sections)
-    if not details_children:
-        details_children.append(
-            widgets.HTML(
-                '<div class="pyflow-notebook__tool-hint">'
-                "Awaiting approval or execution."
-                "</div>"
-            )
-        )
-
-    detail_box = widgets.VBox(details_children)
-    detail_box.add_class("pyflow-notebook__tool-body")
-    detail_box.add_class("pyflow-notebook__stack")
-
-    accordion = widgets.Accordion(children=[detail_box], selected_index=None)
-    accordion.set_title(0, _tool_title(tool_call))
-    accordion.add_class("pyflow-notebook__tool")
-    return accordion
-
-
-def _section_widget(section: NotebookSection) -> widgets.Widget:
-    title = widgets.HTML(
-        '<div class="pyflow-notebook__section-title">'
-        f"{escape(section.title)}"
-        "</div>"
-    )
-    content = (
-        _markdown_block(section.content)
-        if section.kind == "markdown"
-        else _code_block(section.content)
-    )
-    section_box = widgets.VBox([title, content])
-    section_box.add_class("pyflow-notebook__section")
-    section_box.add_class("pyflow-notebook__stack")
-    return section_box
-
-
-def _markdown_block(content: str) -> widgets.Output:
-    output = widgets.Output()
-    output.add_class("pyflow-notebook__markdown")
-    with output:
-        display(Markdown(content))
-    return output
-
-
-def _code_block(content: str) -> widgets.Output:
-    output = widgets.Output()
-    output.add_class("pyflow-notebook__code")
-    language = "json" if _looks_like_json(content) else "text"
-    with output:
-        display(Markdown(f"```{language}\n{content}\n```"))
-    return output
-
-
-def _header_markup(model: NotebookConversationModel) -> str:
-    tool_count = sum(len(turn.tool_calls) for turn in model.turns)
-    summary = (
-        f"{len(model.turns)} turn{'s' if len(model.turns) != 1 else ''}"
-        f" · {tool_count} tool call{'s' if tool_count != 1 else ''}"
-    )
-    return (
-        '<div class="pyflow-notebook__eyebrow">pyflow session</div>'
-        '<div class="pyflow-notebook__title">Conversation Transcript</div>'
-        f'<div class="pyflow-notebook__summary">{escape(summary)}</div>'
-    )
-
-
-def _status_badge_markup(execution_status: str | None) -> str:
-    status = _normalize_status_value(execution_status)
-    return (
-        '<div class="pyflow-notebook__status '
-        f'pyflow-notebook__status--{escape(status)}">'
-        f"{escape(_format_status_label(status))}"
-        "</div>"
-    )
-
-
-def _banner_markup(model: NotebookConversationModel) -> str:
+def _banner_markdown(model: NotebookConversationModel) -> str:
     status = _normalize_status_value(model.execution_status)
     pending_tools = [
         tool_call.tool_name
@@ -773,46 +665,46 @@ def _banner_markup(model: NotebookConversationModel) -> str:
     if status == "waiting_for_confirmation":
         pending = ", ".join(dict.fromkeys(pending_tools)) or "pending tool action"
         return (
-            '<div class="pyflow-notebook__banner pyflow-notebook__banner--pending">'
-            "<strong>Approval required.</strong> "
-            f"Waiting for confirmation for {escape(pending)}."
-            "</div>"
+            "### Approval required\n\n"
+            f"Waiting for confirmation for **{pending}**."
         )
 
     if status == "paused":
-        return (
-            '<div class="pyflow-notebook__banner pyflow-notebook__banner--paused">'
-            "<strong>Paused.</strong> Resume from the controls below."
-            "</div>"
-        )
+        return "### Paused\n\nResume from the live controls below."
 
     if status in {"error", "stuck"}:
-        return (
-            '<div class="pyflow-notebook__banner pyflow-notebook__banner--error">'
-            f"<strong>{escape(_format_status_label(status))}.</strong> "
-            "Review the latest tool output below."
-            "</div>"
-        )
+        label = _format_status_label(status)
+        return f"### {label}\n\nReview the latest tool output below."
 
     return ""
 
 
-def _tool_title(tool_call: NotebookToolCall) -> str:
-    title = f"{tool_call.tool_name} · {_tool_status_label(tool_call.status)}"
+def _tool_call_block(tool_call: NotebookToolCall) -> str:
+    lines = [
+        f"**Status:** {_tool_status_label(tool_call.status)}",
+    ]
     if tool_call.summary:
-        title = f"{title} · {tool_call.summary}"
-    if len(title) > 88:
-        return title[:85] + "..."
-    return title
+        lines.extend(["", tool_call.summary])
+    for section in tool_call.sections:
+        lines.extend(["", f"**{section.title}**", "", _section_body(section)])
+    return _details_block(
+        f"Tool `{escape(tool_call.tool_name)}` · {_tool_status_label(tool_call.status)}",
+        "\n".join(lines).strip(),
+    )
 
 
-def _tool_summary_markup(tool_call: NotebookToolCall) -> str:
-    if tool_call.summary is None:
-        return ""
+def _section_body(section: NotebookSection) -> str:
+    if section.kind == "code":
+        return _code_fence(section.content)
+    return section.content
+
+
+def _details_block(summary: str, body: str) -> str:
     return (
-        '<div class="pyflow-notebook__tool-summary">'
-        f"{escape(tool_call.summary)}"
-        "</div>"
+        "<details>\n"
+        f"<summary>{summary}</summary>\n\n"
+        f"{body}\n\n"
+        "</details>"
     )
 
 
@@ -869,8 +761,7 @@ def _text_content_sequence_to_text(content: Sequence[TextContent]) -> str:
 
 
 def _event_visual_text(event: Event) -> str:
-    visualize = event.visualize
-    return visualize.plain.strip()
+    return event.visualize.plain.strip()
 
 
 def _stringify_value(value: object | None) -> str:
@@ -908,6 +799,19 @@ def _acp_status(event: ACPToolCallEvent) -> _ToolStatus:
     return "pending"
 
 
+def _format_jsonish(content: str) -> str:
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return content
+    return json.dumps(parsed, indent=2, sort_keys=True)
+
+
+def _code_fence(content: str) -> str:
+    language = "json" if _looks_like_json(content) else "text"
+    return f"```{language}\n{content}\n```"
+
+
 def _looks_like_json(content: str) -> bool:
     stripped = content.strip()
     if not stripped:
@@ -915,12 +819,12 @@ def _looks_like_json(content: str) -> bool:
     return stripped[0] in ("{", "[")
 
 
-def _format_jsonish(content: str) -> str:
-    try:
-        parsed = json.loads(content)
-    except json.JSONDecodeError:
-        return content
-    return json.dumps(parsed, indent=2, sort_keys=True)
+def _role_label(role: _TurnRole) -> str:
+    if role == "user":
+        return "User"
+    if role == "agent":
+        return "Agent"
+    return "System"
 
 
 def _tool_status_label(status: _ToolStatus) -> str:
@@ -941,136 +845,3 @@ def _normalize_status_value(status: str | None) -> str:
 
 def _format_status_label(status: str) -> str:
     return status.replace("_", " ").title()
-
-
-_NOTEBOOK_WIDGET_STYLE = """
-<style>
-.pyflow-notebook {
-  --pyflow-ink: #172033;
-  --pyflow-muted: #5f6b7a;
-  --pyflow-line: rgba(24, 37, 62, 0.12);
-  --pyflow-surface: rgba(255, 255, 255, 0.92);
-  --pyflow-surface-strong: rgba(255, 255, 255, 0.98);
-  --pyflow-user: linear-gradient(135deg, #d9efff 0%, #edf7ff 100%);
-  --pyflow-agent: linear-gradient(145deg, #fffdf8 0%, #ffffff 100%);
-  --pyflow-system: linear-gradient(145deg, #fff5df 0%, #fffdf8 100%);
-  background:
-    radial-gradient(circle at top left, rgba(73, 173, 255, 0.16), transparent 32%),
-    radial-gradient(circle at top right, rgba(255, 173, 96, 0.18), transparent 28%),
-    linear-gradient(180deg, #f5f8ff 0%, #fbfcff 100%);
-  border: 1px solid rgba(88, 99, 119, 0.16);
-  border-radius: 24px;
-  box-shadow: 0 18px 40px rgba(19, 34, 58, 0.08);
-  color: var(--pyflow-ink);
-  padding: 20px;
-}
-.pyflow-notebook__eyebrow {
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--pyflow-muted);
-  margin-bottom: 4px;
-}
-.pyflow-notebook__title {
-  font-size: 24px;
-  font-weight: 700;
-  line-height: 1.15;
-}
-.pyflow-notebook__summary {
-  color: var(--pyflow-muted);
-  font-size: 13px;
-  margin-top: 6px;
-}
-.pyflow-notebook__status {
-  border-radius: 999px;
-  padding: 7px 12px;
-  font-size: 12px;
-  font-weight: 700;
-  background: rgba(34, 197, 94, 0.14);
-  color: #166534;
-}
-.pyflow-notebook__status--waiting_for_confirmation {
-  background: rgba(245, 158, 11, 0.14);
-  color: #9a6700;
-}
-.pyflow-notebook__status--paused {
-  background: rgba(59, 130, 246, 0.12);
-  color: #1d4ed8;
-}
-.pyflow-notebook__status--error,
-.pyflow-notebook__status--stuck {
-  background: rgba(239, 68, 68, 0.12);
-  color: #b42318;
-}
-.pyflow-notebook__banner {
-  border-radius: 16px;
-  padding: 12px 14px;
-  border: 1px solid var(--pyflow-line);
-  background: rgba(255, 255, 255, 0.76);
-}
-.pyflow-notebook__banner--pending {
-  background: rgba(255, 244, 222, 0.88);
-  border-color: rgba(217, 119, 6, 0.18);
-}
-.pyflow-notebook__banner--paused {
-  background: rgba(224, 240, 255, 0.84);
-  border-color: rgba(37, 99, 235, 0.16);
-}
-.pyflow-notebook__banner--error {
-  background: rgba(255, 233, 233, 0.84);
-  border-color: rgba(220, 38, 38, 0.16);
-}
-.pyflow-notebook__bubble {
-  width: min(100%, 860px);
-  border: 1px solid var(--pyflow-line);
-  border-radius: 18px;
-  padding: 14px;
-  box-shadow: 0 10px 24px rgba(19, 34, 58, 0.05);
-}
-.pyflow-notebook__stack {
-  gap: 12px;
-}
-.pyflow-notebook__bubble--user {
-  background: var(--pyflow-user);
-}
-.pyflow-notebook__bubble--agent {
-  background: var(--pyflow-agent);
-}
-.pyflow-notebook__bubble--system {
-  background: var(--pyflow-system);
-}
-.pyflow-notebook__section-title,
-.pyflow-notebook__composer-label {
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--pyflow-muted);
-}
-.pyflow-notebook__tool-summary {
-  color: var(--pyflow-ink);
-  line-height: 1.5;
-}
-.pyflow-notebook__tool-hint,
-.pyflow-notebook__empty,
-.pyflow-notebook__empty-turn {
-  color: var(--pyflow-muted);
-}
-.pyflow-notebook__composer {
-  border-top: 1px solid var(--pyflow-line);
-  padding-top: 14px;
-}
-.pyflow-notebook__controls {
-  gap: 10px;
-}
-.pyflow-notebook__section {
-  gap: 6px;
-}
-.pyflow-notebook__feedback {
-  color: var(--pyflow-muted);
-}
-.pyflow-notebook__feedback--pending {
-  color: #1d4ed8;
-}
-</style>
-"""
