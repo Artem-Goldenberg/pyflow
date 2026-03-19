@@ -20,9 +20,9 @@ PLAN.md
 prompt
 trash.py
 trash
-aux
-main.py
+# aux
+# main.py
 *.plan.md
 logs
-plans
-test.py
+# plans
+# test.py
