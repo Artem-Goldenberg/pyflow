@@ -9,7 +9,10 @@ from openhands.sdk import Conversation
 from openhands.sdk.conversation.base import BaseConversation
 
 from pyflow.context import Context
-from pyflow.display import mark_live_repl_value
+from pyflow.display import (
+    conversation_visualizer_for_environment,
+    sync_interactive_session,
+)
 from pyflow.model import Model
 from pyflow.request import Request
 from pyflow.session import Session
@@ -45,14 +48,22 @@ class Agent:
         Returns:
             Pyflow session wrapper for this execution.
         """
-        conversation = Conversation(
-            agent=self._build_openhands_agent(),
-            workspace=self.workspace,
-        )
+        visualizer = conversation_visualizer_for_environment()
+        if visualizer is not None:
+            conversation = Conversation(
+                agent=self._build_openhands_agent(),
+                workspace=self.workspace,
+                visualizer=visualizer,
+            )
+        else:
+            conversation = Conversation(
+                agent=self._build_openhands_agent(),
+                workspace=self.workspace,
+            )
         self.append_message(conversation, request, include_global_context=True)
         conversation.run()
         session = Session(agent=self, conversation=conversation)
-        mark_live_repl_value(session)
+        sync_interactive_session(session)
         return session
 
     def __rrshift__(self, lhs: RequestInput) -> Session:

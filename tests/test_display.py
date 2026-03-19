@@ -3,6 +3,7 @@ from __future__ import annotations
 import builtins
 import io
 import sys
+from typing import cast
 
 import pytest
 from rich.console import Console
@@ -10,11 +11,14 @@ from rich.text import Text
 
 from pyflow.display import (
     DisplayEnvironment,
+    _clear_pending_notebook_values,
     _consume_pending_repl_value,
     detect_display_environment,
     install_rich_pretty,
-    mark_live_repl_value,
+    should_suppress_notebook_display,
+    sync_interactive_session,
 )
+from pyflow.session import Session
 
 
 def test_detect_display_environment_defaults_to_common_cli(
@@ -105,14 +109,14 @@ def test_install_rich_pretty_installs_plain_repl_displayhook(
     builtins._ = previous_last_value  # type: ignore[attr-defined]
 
 
-def test_install_rich_pretty_suppresses_immediate_echo_for_live_value(
+def test_sync_interactive_session_suppresses_immediate_repl_echo(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     buffer = io.StringIO()
     console = Console(file=buffer, force_terminal=False, width=80)
     previous_displayhook = sys.displayhook
     previous_last_value = getattr(builtins, "_", None)
-    value = _DemoRenderable()
+    session = _fake_session()
 
     monkeypatch.setattr("pyflow.display._get_ipython_shell", lambda: None)
     monkeypatch.setattr(
@@ -125,20 +129,20 @@ def test_install_rich_pretty_suppresses_immediate_echo_for_live_value(
     )
 
     install_rich_pretty(console=console)
-    mark_live_repl_value(value)
-    sys.displayhook(value)
+    sync_interactive_session(session)
+    sys.displayhook(session)
 
     assert buffer.getvalue() == ""
-    assert builtins._ is value  # type: ignore[attr-defined]
+    assert builtins._ is session  # type: ignore[attr-defined]
 
     sys.displayhook = previous_displayhook
     builtins._ = previous_last_value  # type: ignore[attr-defined]
 
 
-def test_mark_live_repl_value_ignores_assignment_context(
+def test_sync_interactive_session_ignores_repl_assignment_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    value = _DemoRenderable()
+    session = _fake_session()
 
     monkeypatch.setattr(
         "pyflow.display.detect_display_environment",
@@ -149,9 +153,90 @@ def test_mark_live_repl_value_ignores_assignment_context(
         lambda: False,
     )
 
-    mark_live_repl_value(value)
+    sync_interactive_session(session)
 
-    assert not _consume_pending_repl_value(value)
+    assert not _consume_pending_repl_value(session)
+
+
+def test_sync_interactive_session_suppresses_immediate_notebook_echo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shell = _FakeIPythonShell()
+    session = _fake_session()
+    refreshed = False
+
+    def mark_refreshed(session_value: object) -> None:
+        nonlocal refreshed
+        refreshed = session_value is session
+
+    monkeypatch.setattr(
+        "pyflow.display.detect_display_environment",
+        lambda: DisplayEnvironment.JUPYTER,
+    )
+    monkeypatch.setattr("pyflow.display._get_ipython_shell", lambda: shell)
+    monkeypatch.setattr(
+        "pyflow.display._current_notebook_cell_will_display_expression",
+        lambda: True,
+    )
+    monkeypatch.setattr("pyflow.display._sync_notebook_session", mark_refreshed)
+
+    sync_interactive_session(session)
+
+    assert refreshed
+    assert should_suppress_notebook_display(session)
+
+
+def test_sync_interactive_session_notebook_suppression_clears_after_cell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shell = _FakeIPythonShell()
+    session = _fake_session()
+
+    monkeypatch.setattr(
+        "pyflow.display.detect_display_environment",
+        lambda: DisplayEnvironment.JUPYTER,
+    )
+    monkeypatch.setattr("pyflow.display._get_ipython_shell", lambda: shell)
+    monkeypatch.setattr(
+        "pyflow.display._current_notebook_cell_will_display_expression",
+        lambda: True,
+    )
+    monkeypatch.setattr("pyflow.display._sync_notebook_session", lambda session: None)
+
+    sync_interactive_session(session)
+    shell.execution_count += 1
+
+    assert not should_suppress_notebook_display(session)
+
+
+def test_sync_interactive_session_ignores_notebook_assignment_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shell = _FakeIPythonShell()
+    session = _fake_session()
+
+    monkeypatch.setattr(
+        "pyflow.display.detect_display_environment",
+        lambda: DisplayEnvironment.JUPYTER,
+    )
+    monkeypatch.setattr("pyflow.display._get_ipython_shell", lambda: shell)
+    monkeypatch.setattr(
+        "pyflow.display._current_notebook_cell_will_display_expression",
+        lambda: False,
+    )
+    monkeypatch.setattr("pyflow.display._sync_notebook_session", lambda session: None)
+
+    sync_interactive_session(session)
+
+    assert not should_suppress_notebook_display(session)
+
+
+def test_cell_source_will_display_expression_detects_assignment_vs_bare_expr() -> None:
+    from pyflow.display import _cell_source_will_display_expression
+
+    assert not _cell_source_will_display_expression('session = "Hi" >> agent')
+    assert _cell_source_will_display_expression("session")
+    assert not _cell_source_will_display_expression('"Hi" >> agent;')
 
 
 def _terminal_ipython_shell() -> object:
@@ -173,3 +258,33 @@ def _jupyter_shell() -> object:
 class _DemoRenderable:
     def __rich__(self) -> Text:
         return Text("demo")
+
+
+class _FakeIPythonEvents:
+    callbacks: list[tuple[str, object]]
+
+    def __init__(self) -> None:
+        self.callbacks = []
+
+    def register(self, name: str, callback: object) -> None:
+        self.callbacks.append((name, callback))
+
+
+class _FakeIPythonShell:
+    events: _FakeIPythonEvents
+    execution_count: int
+
+    def __init__(self) -> None:
+        self.events = _FakeIPythonEvents()
+        self.execution_count = 1
+
+
+class _FakeSession:
+    conversation: object
+
+    def __init__(self) -> None:
+        self.conversation = object()
+
+
+def _fake_session() -> Session:
+    return cast(Session, _FakeSession())

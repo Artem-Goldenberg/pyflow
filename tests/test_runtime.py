@@ -27,6 +27,12 @@ from pyflow import (
     tests,
     tool,
 )
+from pyflow.display import (
+    _clear_pending_notebook_values,
+    should_suppress_notebook_display,
+    sync_interactive_session,
+)
+from pyflow.session_rendering import SessionToolCall, SessionTranscript, SessionTurn
 from pyflow.sink import RequestInput
 
 
@@ -179,6 +185,84 @@ def test_session_rich_rendering_uses_snapshot(snapshot_regen: bool) -> None:
     )
 
 
+def test_session_html_rendering_uses_snapshot(snapshot_regen: bool) -> None:
+    session = _session_with_rendered_tool_activity()
+
+    assert_snapshot(
+        "session_html_transcript",
+        session.render_html(),
+        snapshot_regen,
+    )
+
+
+def test_session_repr_html_matches_html_rendering(snapshot_regen: bool) -> None:
+    session = _session_with_rendered_tool_activity()
+
+    assert_snapshot(
+        "session_html_transcript",
+        session._repr_html_(),
+        snapshot_regen,
+    )
+
+
+def test_session_repr_mimebundle_suppresses_immediate_notebook_echo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session_with_rendered_tool_activity()
+    shell = _FakeNotebookShell()
+
+    monkeypatch.setattr(
+        "pyflow.display.detect_display_environment",
+        lambda: DisplayEnvironment.JUPYTER,
+    )
+    monkeypatch.setattr("pyflow.display._get_ipython_shell", lambda: shell)
+    monkeypatch.setattr("pyflow.display._sync_notebook_session", lambda session: None)
+    monkeypatch.setattr(
+        "pyflow.session.detect_display_environment",
+        lambda: DisplayEnvironment.JUPYTER,
+    )
+    monkeypatch.setattr(
+        "pyflow.display._current_notebook_cell_will_display_expression",
+        lambda: True,
+    )
+    sync_interactive_session(session)
+
+    suppressed = session._repr_mimebundle_()
+    suppressed_html = session._repr_html_()
+    assert should_suppress_notebook_display(session)
+    _clear_pending_notebook_values()
+    displayed = session._repr_mimebundle_()
+
+    assert suppressed == {}
+    assert suppressed_html == ""
+    assert displayed["text/plain"] == session.render()
+    assert "application/vnd.jupyter.widget-view+json" in displayed
+
+
+def test_session_html_shows_pending_confirmation_banner() -> None:
+    transcript = SessionTranscript(
+        turns=(
+            SessionTurn(
+                role="agent",
+                tool_calls=[
+                    SessionToolCall(
+                        tool_name="terminal",
+                        tool_call_id="call_terminal",
+                        arguments='{"command": "pytest"}',
+                    )
+                ],
+            ),
+        ),
+        execution_status="waiting_for_confirmation",
+    )
+
+    html = transcript.render_html()
+
+    assert "Approval required" in html
+    assert "session.approve_pending_actions()" in html
+    assert "terminal" in html
+
+
 def test_ai_model_build_llm_maps_fields() -> None:
     model = AIModel(
         name="openai/gpt-4.1",
@@ -318,6 +402,13 @@ def _content_as_text(message: Message) -> str:
         if isinstance(item, TextContent):
             parts.append(item.text)
     return "\n".join(parts)
+
+
+class _FakeNotebookShell:
+    execution_count: int
+
+    def __init__(self) -> None:
+        self.execution_count = 1
 
 
 def _test_model_with_finishes(*call_ids: str) -> TestModel:

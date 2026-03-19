@@ -6,7 +6,13 @@ from pyflow.display import (
     install_rich_pretty,
 )
 from pyflow.model import AIModel, Model, TestModel
+from pyflow.notebook_visualizer import NotebookConversationVisualizer
 from pyflow.request import Request
+from pyflow.runtime_logging import (
+    hide_backend_logs,
+    set_backend_log_level,
+    show_backend_logs,
+)
 from pyflow.session import Session
 from pyflow.sink import RequestSink
 from pyflow.steps import PromptStep, Step, TestStep, tests
@@ -32,12 +38,16 @@ __all__ = [
     "docs",
     "code",
     "detect_display_environment",
+    "hide_backend_logs",
     "install_rich_pretty",
+    "NotebookConversationVisualizer",
     "Model",
     "RequestSink",
     "Session",
+    "set_backend_log_level",
     "Step",
     "PromptStep",
+    "show_backend_logs",
     "TestModel",
     "TestStep",
     "Tool",

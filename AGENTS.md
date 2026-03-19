@@ -27,6 +27,10 @@ The framework should support:
     completed steps
 - [ARCHITECTURE](ARCHITECTURE.md) contains high level architecture of the project
 
+## External References
+
+- OpenHands SDK docs: https://docs.openhands.dev/sdk
+
 ## Conventions
 
 - When implementing something, if the decision of how to do something is ambiguous,
