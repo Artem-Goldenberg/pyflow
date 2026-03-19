@@ -22,7 +22,7 @@ trash.py
 trash
 # aux
 # main.py
-*.plan.md
+# *.plan.md
 logs
 # plans
 # test.py
