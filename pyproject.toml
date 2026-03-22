@@ -8,8 +8,8 @@ license = "MIT"
 dependencies = [
     "ipykernel>=6.0",
     "ipywidgets>=8.0",
-    "openhands-sdk>=1.0.0",
-    "openhands-tools>=1.0.0",
+    "openhands-sdk>=1.14.0",
+    "openhands-tools>=1.12.0",
     "python-dotenv>=1.0",
     "rich>=13.0",
 ]

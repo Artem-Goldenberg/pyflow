@@ -58,6 +58,32 @@ session = "Apply only targeted follow-up changes." >> session
 raw_conversation = session.conversation
 ```
 
+## Parallel Batch Runs
+
+Use `Agent.parallel(...)` to execute many independent requests concurrently while
+preserving input order in the returned results:
+
+```python
+from pyflow import Agent, Model, ParallelFailure
+
+agent = Agent(model=Model.test(scripted_responses=(...,)), tools=())
+results = agent.parallel(
+    chunks,
+    lambda chunk: f"Remove anomalies in: {chunk}",
+    max_concurrency=8,
+)
+
+for result in results:
+    if isinstance(result, ParallelFailure):
+        print("failed:", result.index, result.item, result.phase, result.error)
+    else:
+        print("finished:", result.execution_status)
+```
+
+`Agent.parallel(...)` is synchronous. Successful entries are normal `Session`
+objects; failures are returned inline as `ParallelFailure`. Agent tools and
+workspace are reused as configured for each worker run.
+
 ## Offline Runtime Tests
 
 Use `Model.test(...)` to drive deterministic offline tests without real network requests:
@@ -92,6 +118,7 @@ See:
 
 - OpenHands imports may emit LiteLLM network-fallback warnings in offline environments; this is expected.
 - Each pyflow model owns one live OpenHands `LLM`, so repeated runs through the same model share metrics and other instance-owned LLM state.
+- Backend runtime logs are quiet by default at `WARNING`; call `show_backend_logs()` to re-enable OpenHands/LiteLLM INFO output.
 - `Model.subscription(...)` may perform OpenHands authentication work during model creation.
 - Interactive notebook/REPL workflow is planned but not fully implemented yet.
 

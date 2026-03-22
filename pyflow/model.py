@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Self, Sequence
 
 from openhands.sdk import LLM
 from openhands.sdk.llm import Message
@@ -27,6 +27,15 @@ class Model(ABC):
 
         Returns:
             OpenHands LLM instance owned by this model.
+        """
+
+    @abstractmethod
+    def _fresh_runtime_model(self) -> Self:
+        """
+        Return an isolated model instance for one runtime execution.
+
+        Returns:
+            Model instance with fresh runtime state suitable for one worker.
         """
 
     @staticmethod
@@ -164,6 +173,11 @@ class AIModel(Model):
         """
         return self.llm
 
+    def _fresh_runtime_model(self) -> AIModel:
+        llm = self.llm.model_copy()
+        llm.reset_metrics()
+        return AIModel(llm=llm)
+
 
 @dataclass(kw_only=True)
 class TestModel(Model):
@@ -186,6 +200,17 @@ class TestModel(Model):
 
     def __post_init__(self) -> None:
         self.scripted_responses = tuple(self.scripted_responses)
+
+    def _fresh_runtime_model(self) -> TestModel:
+        llm_data = self.llm.model_dump(mode="python")
+        llm = TestLLM(
+            **llm_data,
+            scripted_responses=list(self.scripted_responses),
+        )
+        return TestModel(
+            llm=llm,
+            scripted_responses=self.scripted_responses,
+        )
 
 
 def _create_api_llm(

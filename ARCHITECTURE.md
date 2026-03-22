@@ -37,6 +37,7 @@ Responsible for owning and constructing runtime LLM wrappers:
 - `Model` abstract base plus public factory surface (`from_api(...)`, `subscription(...)`, `test(...)`)
 - `AIModel` wrapper around one live OpenHands `LLM`
 - `TestModel` wrapper around one live `TestLLM` plus a pyflow-owned scripted-response record
+- Non-public fresh-runtime cloning hook for isolated worker execution (`_fresh_runtime_model()`)
 
 ### 4. Agent Layer
 
@@ -45,6 +46,7 @@ Responsible for executable user-facing object:
 - `Agent(model=...)` consumes `model.inner_llm` and stores a built OpenHands agent instance
 - Agent-level contexts render as a global prompt preamble
 - Supports sink execution (`request >> agent`) and returns a pyflow `Session`
+- Supports synchronous batch execution via `Agent.parallel(...)`, returning ordered `Session | ParallelFailure` entries
 
 ### 5. Session Layer (`pyflow.session`)
 
@@ -77,6 +79,14 @@ Type-check-only imports are used to avoid runtime cycles (e.g., `steps.py` refer
 4. Agent uses the model's owned OpenHands `LLM` to create a fresh conversation run
 5. OpenHands conversation runs and returns a pyflow `Session`
 6. User can continue the same runtime via `request >> session`
+
+Parallel batch flow:
+
+1. User calls `agent.parallel(items, build_request, max_concurrency=...)`
+2. Pyflow converts each built request input into a `Request`
+3. Each worker clones a fresh runtime model via `_fresh_runtime_model()`
+4. Each worker creates and runs its own OpenHands conversation
+5. Pyflow returns results in original input order as `Session | ParallelFailure`
 
 ## Planned Extensions
 

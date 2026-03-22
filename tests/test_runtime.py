@@ -402,7 +402,7 @@ def test_agent_builds_openhands_agent_with_test_model_llm() -> None:
     )
     # This test verifies LLM wiring, not built-in tool wiring.
     agent = Agent(model=model, tools=())
-    openhands_agent = agent._build_openhands_agent()
+    openhands_agent = agent._build_openhands_agent(runtime_model=model)
 
     assert isinstance(openhands_agent.llm, TestLLM)
     assert openhands_agent.llm is model.llm

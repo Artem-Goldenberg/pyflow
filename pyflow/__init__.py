@@ -7,6 +7,7 @@ from pyflow.display import (
 )
 from pyflow.model import AIModel, Model, TestModel
 from pyflow.notebook_visualizer import NotebookConversationVisualizer
+from pyflow.parallel import ParallelFailure
 from pyflow.request import Request
 from pyflow.runtime_logging import (
     hide_backend_logs,
@@ -42,6 +43,7 @@ __all__ = [
     "install_rich_pretty",
     "NotebookConversationVisualizer",
     "Model",
+    "ParallelFailure",
     "RequestSink",
     "Session",
     "set_backend_log_level",

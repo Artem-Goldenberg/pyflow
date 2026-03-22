@@ -7,11 +7,28 @@ import pytest
 from pyflow import Agent, Model
 from pyflow.notebook_visualizer import NotebookConversationVisualizer
 from pyflow.runtime_logging import (
+    apply_default_backend_log_policy,
     apply_default_jupyter_backend_log_policy,
     hide_backend_logs,
     set_backend_log_level,
     show_backend_logs,
 )
+
+
+def test_apply_default_backend_log_policy_sets_warning_levels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logger_map = _install_test_backend_loggers(monkeypatch)
+    monkeypatch.setattr("pyflow.runtime_logging._explicit_backend_log_level", None)
+
+    apply_default_backend_log_policy()
+
+    assert {name: logger.level for name, logger in logger_map.items()} == {
+        "openhands": logging.WARNING,
+        "litellm": logging.WARNING,
+        "LiteLLM": logging.WARNING,
+        "openai": logging.WARNING,
+    }
 
 
 def test_apply_default_jupyter_backend_log_policy_sets_warning_levels(
@@ -68,6 +85,7 @@ def test_agent_run_uses_environment_visualizer_helper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = 0
+    backend_log_policy_calls = 0
     fake_conversation = _FakeConversation()
 
     def visualizer_factory() -> NotebookConversationVisualizer:
@@ -75,10 +93,18 @@ def test_agent_run_uses_environment_visualizer_helper(
         calls += 1
         return NotebookConversationVisualizer()
 
+    def backend_log_policy() -> None:
+        nonlocal backend_log_policy_calls
+        backend_log_policy_calls += 1
+
     def conversation_factory(**kwargs: object) -> _FakeConversation:
         del kwargs
         return fake_conversation
 
+    monkeypatch.setattr(
+        "pyflow.agent.apply_default_backend_log_policy",
+        backend_log_policy,
+    )
     monkeypatch.setattr(
         "pyflow.agent.conversation_visualizer_for_environment",
         visualizer_factory,
@@ -92,6 +118,7 @@ def test_agent_run_uses_environment_visualizer_helper(
     )
 
     assert calls == 1
+    assert backend_log_policy_calls == 1
 
 
 class _FakeConversation:

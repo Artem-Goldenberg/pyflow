@@ -9,6 +9,7 @@ _BACKEND_LOGGER_NAMES = (
     "LiteLLM",
     "openai",
 )
+_DEFAULT_BACKEND_LEVEL = logging.WARNING
 _DEFAULT_NOTEBOOK_BACKEND_LEVEL = logging.WARNING
 _explicit_backend_log_level: int | None = None
 
@@ -32,8 +33,18 @@ def show_backend_logs(level: int | str = logging.INFO) -> None:
     set_backend_log_level(level)
 
 
+def apply_default_backend_log_policy() -> None:
+    """Keep backend logs quiet unless the user explicitly overrides them."""
+    if _explicit_backend_log_level is not None:
+        return
+    _apply_backend_log_level(_DEFAULT_BACKEND_LEVEL)
+
+
 def apply_default_jupyter_backend_log_policy() -> None:
     """Keep backend logs quiet in notebooks unless the user overrides them."""
+    if _DEFAULT_NOTEBOOK_BACKEND_LEVEL == _DEFAULT_BACKEND_LEVEL:
+        apply_default_backend_log_policy()
+        return
     if _explicit_backend_log_level is not None:
         return
     _apply_backend_log_level(_DEFAULT_NOTEBOOK_BACKEND_LEVEL)
