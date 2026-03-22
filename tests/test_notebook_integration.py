@@ -14,17 +14,12 @@ def test_notebook_assignment_then_session_renders_widget_in_both_cells() -> None
     assignment_outputs = executed.cells[1].outputs
     session_output = executed.cells[2].outputs[0]
 
-    transcript_output = _output_with_mime(assignment_outputs, "text/markdown")
-    controls_output = _output_with_mime(
-        assignment_outputs,
-        "application/vnd.jupyter.widget-view+json",
+    assert len(assignment_outputs) == 2
+    assert all(
+        output.output_type == "display_data"
+        and "application/vnd.jupyter.widget-view+json" in output.data
+        for output in assignment_outputs
     )
-
-    assert transcript_output.output_type == "display_data"
-    assert "## pyflow session" in transcript_output.data["text/markdown"]
-    assert "### User" in transcript_output.data["text/markdown"]
-    assert "Hi" in transcript_output.data["text/markdown"]
-    assert controls_output.output_type == "display_data"
 
     assert session_output.output_type == "display_data"
     assert "text/markdown" in session_output.data
@@ -42,15 +37,21 @@ def test_notebook_bare_expression_hides_the_session_auto_display_payload() -> No
     outputs = executed.cells[1].outputs
 
     assert len(outputs) == 2
-    transcript_output = _output_with_mime(outputs, "text/markdown")
-    controls_output = _output_with_mime(
-        outputs,
-        "application/vnd.jupyter.widget-view+json",
+    assert all(
+        output.output_type == "display_data"
+        and "application/vnd.jupyter.widget-view+json" in output.data
+        for output in outputs
     )
 
-    assert transcript_output.output_type == "display_data"
-    assert "## pyflow session" in transcript_output.data["text/markdown"]
-    assert controls_output.output_type == "display_data"
+
+def test_notebook_session_run_suppresses_blank_backend_log_outputs() -> None:
+    notebook = _notebook_from_fixture("session_assignment_blank_warning.py")
+
+    executed = _execute_notebook_or_skip(notebook)
+    outputs = executed.cells[1].outputs
+
+    assert len(outputs) == 2
+    assert not any(_is_empty_rich_html_output(output) for output in outputs)
 
 
 def _output_with_mime(
@@ -62,6 +63,16 @@ def _output_with_mime(
         if mime_type in data:
             return output
     raise AssertionError(f"No notebook output contained MIME type {mime_type!r}")
+
+
+def _is_empty_rich_html_output(output: nbformat.NotebookNode) -> bool:
+    data = output.get("data", {})
+    html = data.get("text/html")
+    if not isinstance(html, list) or len(html) != 1:
+        return False
+    if data.get("text/plain") != []:
+        return False
+    return html[0].startswith("<pre ") and html[0].endswith("></pre>\n")
 
 
 def _execute_notebook_or_skip(

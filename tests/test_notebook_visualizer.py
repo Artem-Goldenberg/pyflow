@@ -67,7 +67,7 @@ def test_build_notebook_conversation_model_tracks_tool_sections() -> None:
     assert "I will add the numbers." in model.turns[1].tool_calls[0].sections[1].content
 
 
-def test_notebook_visualizer_updates_widget_live() -> None:
+def test_notebook_visualizer_buffers_events_until_refresh() -> None:
     display_target = _CaptureWidgetTarget()
     state = _FakeConversationState()
     visualizer = NotebookConversationVisualizer(display_target=display_target)
@@ -79,11 +79,14 @@ def test_notebook_visualizer_updates_widget_live() -> None:
         state.events = tuple([*state.events, event])
         visualizer.on_event(event)
 
+    assert display_target.transcript_calls == 0
+    assert display_target.control_calls == 0
+
     state.execution_status = SimpleNamespace(value="finished")
     visualizer.refresh()
 
-    assert display_target.transcript_calls == len(session.events) + 1
-    assert display_target.control_calls == len(session.events) + 1
+    assert display_target.transcript_calls == 1
+    assert display_target.control_calls == 1
     assert all(widget is visualizer.widget for widget in display_target.widgets)
     assert isinstance(visualizer.widget, widgets.VBox)
     assert "## pyflow session" in display_target.transcripts[-1]

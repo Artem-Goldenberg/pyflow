@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from rich.logging import RichHandler
 
 
 _BACKEND_LOGGER_NAMES = (
@@ -12,6 +13,14 @@ _BACKEND_LOGGER_NAMES = (
 _DEFAULT_BACKEND_LEVEL = logging.WARNING
 _DEFAULT_NOTEBOOK_BACKEND_LEVEL = logging.WARNING
 _explicit_backend_log_level: int | None = None
+_drop_empty_rich_log_filter: _DropEmptyRichLogFilter | None = None
+
+
+class _DropEmptyRichLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.exc_info is not None or record.stack_info is not None:
+            return True
+        return bool(record.getMessage().strip())
 
 
 def set_backend_log_level(level: int | str) -> None:
@@ -42,6 +51,7 @@ def apply_default_backend_log_policy() -> None:
 
 def apply_default_jupyter_backend_log_policy() -> None:
     """Keep backend logs quiet in notebooks unless the user overrides them."""
+    _install_drop_empty_rich_log_filter()
     if _DEFAULT_NOTEBOOK_BACKEND_LEVEL == _DEFAULT_BACKEND_LEVEL:
         apply_default_backend_log_policy()
         return
@@ -53,6 +63,30 @@ def apply_default_jupyter_backend_log_policy() -> None:
 def _apply_backend_log_level(level: int) -> None:
     for logger_name in _BACKEND_LOGGER_NAMES:
         logging.getLogger(logger_name).setLevel(level)
+
+
+def _install_drop_empty_rich_log_filter() -> None:
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers:
+        if not isinstance(handler, RichHandler):
+            continue
+        if _has_drop_empty_filter(handler):
+            continue
+        handler.addFilter(_drop_empty_filter())
+
+
+def _drop_empty_filter() -> _DropEmptyRichLogFilter:
+    global _drop_empty_rich_log_filter
+    if _drop_empty_rich_log_filter is None:
+        _drop_empty_rich_log_filter = _DropEmptyRichLogFilter()
+    return _drop_empty_rich_log_filter
+
+
+def _has_drop_empty_filter(handler: logging.Handler) -> bool:
+    return any(
+        isinstance(filter_instance, _DropEmptyRichLogFilter)
+        for filter_instance in handler.filters
+    )
 
 
 def _resolve_log_level(level: int | str) -> int:
