@@ -8,6 +8,11 @@ from pyflow.display import (
 from pyflow.model import AIModel, Model, TestModel
 from pyflow.notebook_visualizer import NotebookConversationVisualizer
 from pyflow.parallel import ParallelFailure
+from pyflow.model_generator import (
+    discover_provider_models,
+    generate_models_file,
+    generate_models_from_provider,
+)
 from pyflow.request import Request
 from pyflow.runtime_logging import (
     hide_backend_logs,
@@ -44,6 +49,9 @@ __all__ = [
     "NotebookConversationVisualizer",
     "Model",
     "ParallelFailure",
+    "discover_provider_models",
+    "generate_models_file",
+    "generate_models_from_provider",
     "RequestSink",
     "Session",
     "set_backend_log_level",
