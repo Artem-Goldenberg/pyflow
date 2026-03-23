@@ -1,0 +1,233 @@
+
+<style>
+.pyflow-session {
+  --pyflow-ink: #172033;
+  --pyflow-muted: #586377;
+  --pyflow-line: rgba(27, 39, 61, 0.12);
+  --pyflow-surface: rgba(255, 255, 255, 0.88);
+  --pyflow-surface-strong: rgba(255, 255, 255, 0.96);
+  --pyflow-user: linear-gradient(135deg, #d8f0ff 0%, #eef7ff 100%);
+  --pyflow-agent: linear-gradient(145deg, #fffdf8 0%, #ffffff 100%);
+  --pyflow-system: linear-gradient(145deg, #fff5df 0%, #fffdf8 100%);
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--pyflow-ink);
+  background:
+    radial-gradient(circle at top left, rgba(73, 173, 255, 0.16), transparent 32%),
+    radial-gradient(circle at top right, rgba(255, 173, 96, 0.18), transparent 28%),
+    linear-gradient(180deg, #f5f8ff 0%, #fbfcff 100%);
+  border: 1px solid rgba(88, 99, 119, 0.16);
+  border-radius: 24px;
+  box-shadow: 0 18px 40px rgba(19, 34, 58, 0.08);
+  padding: 20px;
+}
+.pyflow-session__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+.pyflow-session__eyebrow,
+.pyflow-tool-call__eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--pyflow-muted);
+  margin-bottom: 4px;
+}
+.pyflow-session__title {
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.15;
+}
+.pyflow-session__summary {
+  color: var(--pyflow-muted);
+  font-size: 13px;
+  margin-top: 6px;
+}
+.pyflow-session__status {
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  border: 1px solid transparent;
+  background: rgba(34, 197, 94, 0.12);
+  color: #166534;
+}
+.pyflow-session__status--waiting_for_confirmation {
+  background: rgba(245, 158, 11, 0.14);
+  color: #9a6700;
+}
+.pyflow-session__status--paused {
+  background: rgba(59, 130, 246, 0.12);
+  color: #1d4ed8;
+}
+.pyflow-session__status--error,
+.pyflow-session__status--stuck {
+  background: rgba(239, 68, 68, 0.12);
+  color: #b42318;
+}
+.pyflow-session__banner {
+  border-radius: 18px;
+  padding: 14px 16px;
+  margin-bottom: 18px;
+  border: 1px solid var(--pyflow-line);
+  background: rgba(255, 255, 255, 0.7);
+}
+.pyflow-session__banner-title {
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.pyflow-session__banner--pending {
+  background: rgba(255, 244, 222, 0.85);
+  border-color: rgba(217, 119, 6, 0.18);
+}
+.pyflow-session__banner--paused {
+  background: rgba(224, 240, 255, 0.82);
+  border-color: rgba(37, 99, 235, 0.16);
+}
+.pyflow-session__banner--error {
+  background: rgba(255, 233, 233, 0.82);
+  border-color: rgba(220, 38, 38, 0.16);
+}
+.pyflow-session__row {
+  display: flex;
+  margin-top: 14px;
+}
+.pyflow-session__row--user {
+  justify-content: flex-end;
+}
+.pyflow-session__row--agent,
+.pyflow-session__row--system {
+  justify-content: flex-start;
+}
+.pyflow-session__bubble {
+  width: min(100%, 860px);
+  border-radius: 20px;
+  padding: 14px 16px;
+  border: 1px solid var(--pyflow-line);
+  box-shadow: 0 10px 24px rgba(19, 34, 58, 0.05);
+  background: var(--pyflow-surface);
+}
+.pyflow-session__row--user .pyflow-session__bubble {
+  max-width: 78%;
+}
+.pyflow-session__row--agent .pyflow-session__bubble,
+.pyflow-session__row--system .pyflow-session__bubble {
+  max-width: 88%;
+}
+.pyflow-session__bubble--user {
+  background: var(--pyflow-user);
+}
+.pyflow-session__bubble--agent {
+  background: var(--pyflow-agent);
+}
+.pyflow-session__bubble--system {
+  background: var(--pyflow-system);
+}
+.pyflow-session__bubble-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.pyflow-session__role {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--pyflow-muted);
+  font-weight: 700;
+}
+.pyflow-session__message {
+  white-space: pre-wrap;
+  line-height: 1.55;
+  margin-top: 10px;
+}
+.pyflow-session__message:first-of-type {
+  margin-top: 0;
+}
+.pyflow-tool-call {
+  margin-top: 14px;
+  border-radius: 16px;
+  padding: 14px;
+  border: 1px solid rgba(63, 80, 113, 0.12);
+  background: var(--pyflow-surface-strong);
+}
+.pyflow-tool-call__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.pyflow-tool-call__title {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+.pyflow-tool-call__status {
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  background: rgba(59, 130, 246, 0.12);
+  color: #1d4ed8;
+}
+.pyflow-tool-call__status--completed {
+  background: rgba(34, 197, 94, 0.14);
+  color: #166534;
+}
+.pyflow-tool-call__status--error {
+  background: rgba(239, 68, 68, 0.14);
+  color: #b42318;
+}
+.pyflow-tool-call__status--rejected {
+  background: rgba(217, 45, 32, 0.16);
+  color: #912018;
+}
+.pyflow-tool-call__section-label {
+  margin-top: 12px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--pyflow-muted);
+}
+.pyflow-tool-call__hint {
+  margin-top: 12px;
+  color: var(--pyflow-muted);
+  font-size: 13px;
+}
+.pyflow-tool-call__code {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #13213a;
+  color: #f8fbff;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, "SFMono-Regular", SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.pyflow-session__empty,
+.pyflow-session__empty-turn {
+  color: var(--pyflow-muted);
+}
+.pyflow-session code {
+  font-family: ui-monospace, "SFMono-Regular", SFMono-Regular, Menlo, monospace;
+  background: rgba(19, 33, 58, 0.08);
+  border-radius: 6px;
+  padding: 0 4px;
+}
+</style>
+<section class="pyflow-session"><div class="pyflow-session__header"><div class="pyflow-session__title-group"><div class="pyflow-session__eyebrow">pyflow session</div><div class="pyflow-session__title">Conversation Transcript</div><div class="pyflow-session__summary">3 turns · 2 tool calls</div></div><div class="pyflow-session__status pyflow-session__status--finished">Finished</div></div><div class="pyflow-session__row pyflow-session__row--user"><article class="pyflow-session__bubble pyflow-session__bubble--user"><div class="pyflow-session__bubble-head"><span class="pyflow-session__role">User</span></div><div class="pyflow-session__message">1. Add 1 and 2.</div></article></div><div class="pyflow-session__row pyflow-session__row--agent"><article class="pyflow-session__bubble pyflow-session__bubble--agent"><div class="pyflow-session__bubble-head"><span class="pyflow-session__role">Agent</span></div><div class="pyflow-session__message">I will add the numbers.</div><section class="pyflow-tool-call"><div class="pyflow-tool-call__header"><div class="pyflow-tool-call__title-group"><div class="pyflow-tool-call__eyebrow">tool call</div><div class="pyflow-tool-call__title">session_render_sum_tool_test</div></div><span class="pyflow-tool-call__status pyflow-tool-call__status--completed">Result</span></div><div class="pyflow-tool-call__section-label">Arguments</div><pre class="pyflow-tool-call__code"><code>{
+  &quot;a&quot;: 1,
+  &quot;b&quot;: 2
+}</code></pre><div class="pyflow-tool-call__section-label">Result</div><pre class="pyflow-tool-call__code"><code>3</code></pre></section></article></div><div class="pyflow-session__row pyflow-session__row--agent"><article class="pyflow-session__bubble pyflow-session__bubble--agent"><div class="pyflow-session__bubble-head"><span class="pyflow-session__role">Agent</span></div><section class="pyflow-tool-call"><div class="pyflow-tool-call__header"><div class="pyflow-tool-call__title-group"><div class="pyflow-tool-call__eyebrow">tool call</div><div class="pyflow-tool-call__title">finish</div></div><span class="pyflow-tool-call__status pyflow-tool-call__status--completed">Result</span></div><div class="pyflow-tool-call__section-label">Arguments</div><pre class="pyflow-tool-call__code"><code>{
+  &quot;message&quot;: &quot;Done&quot;
+}</code></pre><div class="pyflow-tool-call__section-label">Result</div><pre class="pyflow-tool-call__code"><code>Done</code></pre></section></article></div></section>

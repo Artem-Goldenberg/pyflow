@@ -16,13 +16,14 @@ secrets
 
 examples
 *-generated/
+_generated
 PLAN.md
 prompt
 trash.py
 trash
-aux
-main.py
-*.plan.md
+# aux
+# main.py
+# *.plan.md
 logs
-plans
-test.py
+# plans
+# test.py

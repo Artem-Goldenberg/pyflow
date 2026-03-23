@@ -27,6 +27,10 @@ The framework should support:
     completed steps
 - [ARCHITECTURE](ARCHITECTURE.md) contains high level architecture of the project
 
+## External References
+
+- OpenHands SDK docs: https://docs.openhands.dev/sdk
+
 ## Conventions
 
 - When implementing something, if the decision of how to do something is ambiguous,
@@ -35,10 +39,12 @@ The framework should support:
 - Use `TypeVar`/`ParamSpec`/protocols where they improve API safety
 - Prefer dataclasses and abstract base classes when appropriate
 - Keep modules flat and focused
+- In modules, keep public classes/functions above private helpers
 - Keep APIs immutable by default for request composition
 - In DSL expressions that use `@` and `>>`, avoid unnecessary parentheses and keep expressions as bare as possible
 - Prefer `typing.Sequence` in annotations (avoid `tuple[...]` in public API)
 - Use modern generic class syntax where applicable (for example, `class Some[T]`)
+- Prefer modern f-strings over string concatenation or `.format(...)` for interpolation
 - Use `typing` types when equivalents exist (do not import from `collections.abc` for those cases)
 - For dunder operators returning `NotImplemented`, do not include `NotImplementedType` in return annotations
 - Use `.venv/bin/python` and `.venv/bin/pip` for Python tooling; never call system `python`/`pip`
@@ -54,7 +60,7 @@ Sort imports in this order:
 
 ## Testing
 
-- Use `pytest`
+- Use `.venv/bin/pytest`
 - Always run `.venv/bin/pyright` to check type errors after Python changes
 - Cover DSL operator behavior, typing-sensitive logic, and backend compilation boundaries
 - Add regression tests for operator precedence edge cases (`@` vs `>>`)

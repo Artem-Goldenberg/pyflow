@@ -6,13 +6,18 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
-    "openhands-sdk>=1.0.0",
-    "openhands-tools>=1.0.0",
+    "ipykernel>=6.0",
+    "ipywidgets>=8.0",
+    "openhands-sdk>=1.14.0",
+    "openhands-tools>=1.12.0",
+    "python-dotenv>=1.0",
     "rich>=13.0",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "nbclient>=0.10",
+    "nbformat>=5.10",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
 ]
