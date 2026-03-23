@@ -84,6 +84,50 @@ for result in results:
 objects; failures are returned inline as `ParallelFailure`. Agent tools and
 workspace are reused as configured for each worker run.
 
+## Git Worktree Orchestration
+
+Use `pyflow.gittools` when you want one branch/worktree per agent task and a
+separate merge worktree for a resolving agent:
+
+```python
+from pyflow import Agent
+from pyflow.gittools import GitRepo
+
+repo = GitRepo.open(".")
+
+task_a = repo.create_worktree(
+    worktrees_root="../agent-worktrees",
+    run_id="run-42",
+    task_id="task-a",
+)
+task_b = repo.create_worktree(
+    worktrees_root="../agent-worktrees",
+    run_id="run-42",
+    task_id="task-b",
+)
+
+agent_a = Agent(model=model, workspace=task_a.path)
+agent_b = Agent(model=model, workspace=task_b.path)
+
+merge_tree = repo.create_worktree(
+    worktrees_root="../agent-worktrees",
+    run_id="run-42",
+    task_id="merge",
+    start_point="main",
+    branch_name="merge/run-42",
+)
+merge_state = repo.start_merge(merge_tree, "pyflow/run-42/task-a")
+
+if merge_state.conflict_paths:
+    merge_repo = GitRepo.open(merge_tree.path)
+    merge_status = merge_repo.status()
+    merge_diff = merge_repo.diff(left="AUTO_MERGE")
+```
+
+The wrapper keeps raw stdout/stderr for agent prompts, but also parses stable
+Git porcelain formats for worktree listing, status inspection, diff summaries,
+and merge state.
+
 ## Offline Runtime Tests
 
 Use `Model.test(...)` to drive deterministic offline tests without real network requests:
