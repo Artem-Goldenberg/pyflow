@@ -1,0 +1,27 @@
+1. Summarize the chunk. Use documentation files: notes.md.
+2. Before finishing, ensure tests pass: unit.
+
+Output contract:
+Return the final answer by calling `finish`.
+Set `finish.message` to raw JSON that matches this schema exactly.
+Do not wrap the JSON in Markdown fences.
+Do not include extra prose outside the JSON.
+JSON schema:
+{
+  "properties": {
+    "row_count": {
+      "title": "Row Count",
+      "type": "integer"
+    },
+    "source": {
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source",
+    "row_count"
+  ],
+  "title": "_ChunkSummary",
+  "type": "object"
+}

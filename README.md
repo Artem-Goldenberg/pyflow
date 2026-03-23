@@ -58,6 +58,36 @@ session = "Apply only targeted follow-up changes." >> session
 raw_conversation = session.conversation
 ```
 
+## Structured Output
+
+Use `// output(...)` when the run should finish with JSON that matches a
+Pydantic model, and read the parsed value from `session.result`:
+
+```python
+from pydantic import BaseModel, SecretStr
+from pyflow import Agent, Model, output
+
+
+class ChunkSummary(BaseModel):
+    source: str
+    row_count: int
+
+
+model = Model.from_api(
+    name="openai/gpt-4.1",
+    base_url="https://api.openai.com/v1",
+    api_key=SecretStr("..."),
+)
+agent = Agent(model=model)
+session = "Summarize the chunk." // output(ChunkSummary) >> agent
+summary = session.result
+raw_json = session.result_text
+```
+
+The output contract is request-level metadata. It can be attached to the root
+prompt or to an already-built `Request`, but not to later steps in a chained
+request.
+
 ## Parallel Batch Runs
 
 Use `Agent.parallel(...)` to execute many independent requests concurrently while

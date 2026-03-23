@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import io
-import pytest
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence, cast
 
+import pytest
 from openhands.sdk import BaseConversation, LLM, Message, TextContent
 from openhands.sdk.llm import MessageToolCall
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.testing import TestLLMExhaustedError
+from pydantic import BaseModel
 from pydantic import SecretStr
 from rich.console import Console
 
@@ -21,9 +23,12 @@ from pyflow import (
     Model,
     PromptStep,
     Session,
+    SessionResultMissingError,
+    SessionResultValidationError,
     TestModel,
     code,
     docs,
+    output,
     tests,
     tool,
 )
@@ -141,6 +146,102 @@ def test_step_rshift_agent_and_model_return_session() -> None:
 
     assert isinstance(agent_session, Session)
     assert isinstance(model_session, Session)
+
+
+def test_structured_request_rshift_agent_parses_finish_payload() -> None:
+    payload = json.dumps({"source": "chunk-a", "row_count": 2})
+    model = Model.test(scripted_responses=(_finish_message("run_one", message=payload),))
+
+    session = "Summarize the chunk." // output(_ChunkSummary) >> Agent(model=model, tools=())
+    result = session.result
+
+    assert isinstance(result, _ChunkSummary)
+    assert result.source == "chunk-a"
+    assert result.row_count == 2
+    assert session.result is result
+    assert session.result_text == payload
+
+
+def test_structured_request_rshift_model_parses_finish_payload() -> None:
+    payload = json.dumps({"source": "chunk-b", "row_count": 4})
+    model = Model.test(scripted_responses=(_finish_message("run_one", message=payload),))
+
+    session = "Summarize the chunk." // output(_ChunkSummary) >> model
+    result = session.result
+
+    assert isinstance(result, _ChunkSummary)
+    assert result.source == "chunk-b"
+    assert result.row_count == 4
+
+
+def test_session_result_returns_raw_finish_message_without_output_contract() -> None:
+    session = "Fix the bug." >> _agent_with_finish_messages("raw result")
+
+    assert session.result == "raw result"
+    assert session.result_text == "raw result"
+
+
+@pytest.mark.parametrize(
+    ("message", "match"),
+    [
+        ('{"source": "chunk-a", "row_count": "oops"}', "row_count"),
+        ("not json", "Invalid JSON"),
+    ],
+)
+def test_structured_result_validation_errors(
+    message: str,
+    match: str,
+) -> None:
+    session = "Summarize the chunk." // output(_ChunkSummary) >> _agent_with_finish_messages(
+        message
+    )
+
+    with pytest.raises(SessionResultValidationError, match=match) as exc_info:
+        _ = session.result
+
+    assert exc_info.value.raw_text == message
+    assert exc_info.value.model_type is _ChunkSummary
+
+
+def test_structured_result_missing_finish_raises_error() -> None:
+    model = Model.test(
+        scripted_responses=(
+            Message(role="assistant", content=[TextContent(text="Done")]),
+        )
+    )
+    session = "Summarize the chunk." // output(_ChunkSummary) >> Agent(model=model, tools=())
+
+    with pytest.raises(SessionResultMissingError, match="finish result"):
+        _ = session.result
+
+
+def test_plain_session_continuation_clears_structured_output_contract() -> None:
+    structured_payload = json.dumps({"source": "chunk-a", "row_count": 2})
+    agent = Agent(
+        model=Model.test(
+            scripted_responses=(
+                _finish_message("first_run", message=structured_payload),
+                _finish_message("second_run", message="follow-up result"),
+            )
+        ),
+        tools=(),
+    )
+    session = "Summarize the chunk." // output(_ChunkSummary) >> agent
+
+    assert isinstance(session.result, _ChunkSummary)
+
+    returned = "Provide a follow-up." >> session
+
+    assert returned is session
+    assert session.output_spec is None
+    assert session.result == "follow-up result"
+
+
+def test_structured_output_is_rejected_for_session_continuation() -> None:
+    session = "Start the session." >> _agent_with_finishes("first_run", "second_run")
+
+    with pytest.raises(ValueError, match="fresh runs"):
+        _ = "Provide a follow-up." // output(_ChunkSummary) >> session
 
 
 def test_request_rshift_session_reuses_same_session() -> None:
@@ -573,6 +674,18 @@ def _test_model_with_finishes(*call_ids: str) -> TestModel:
     )
 
 
+def _agent_with_finish_messages(*messages: str) -> Agent:
+    return Agent(
+        model=Model.test(
+            scripted_responses=tuple(
+                _finish_message(f"run_{index}", message=message)
+                for index, message in enumerate(messages, start=1)
+            )
+        ),
+        tools=(),
+    )
+
+
 def _agent_with_finishes(*call_ids: str) -> Agent:
     # Most runtime tests do not exercise built-in OpenHands tools. Using no tools
     # avoids terminal bootstrap overhead in each Conversation.run() call.
@@ -614,8 +727,13 @@ def _finish_message(call_id: str, message: str = "Done") -> Message:
             MessageToolCall(
                 id=call_id,
                 name="finish",
-                arguments=f'{{"message": "{message}"}}',
+                arguments=json.dumps({"message": message}),
                 origin="completion",
             )
         ],
     )
+
+
+class _ChunkSummary(BaseModel):
+    source: str
+    row_count: int

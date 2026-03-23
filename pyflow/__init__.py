@@ -9,6 +9,13 @@ from pyflow.display import (
 )
 from pyflow.model import AIModel, Model, TestModel
 from pyflow.notebook_visualizer import NotebookConversationVisualizer
+from pyflow.output import (
+    OutputSpec,
+    SessionResultError,
+    SessionResultMissingError,
+    SessionResultValidationError,
+    output,
+)
 from pyflow.parallel import ParallelFailure
 from pyflow.model_generator import (
     discover_provider_models,
@@ -50,6 +57,7 @@ __all__ = [
     "hide_backend_logs",
     "install_rich_pretty",
     "NotebookConversationVisualizer",
+    "OutputSpec",
     "Model",
     "ParallelFailure",
     "discover_provider_models",
@@ -57,6 +65,9 @@ __all__ = [
     "generate_models_from_provider",
     "RequestSink",
     "Session",
+    "SessionResultError",
+    "SessionResultMissingError",
+    "SessionResultValidationError",
     "set_live_rendering",
     "set_backend_log_level",
     "Step",
@@ -74,5 +85,6 @@ __all__ = [
     "tool",
     "tools",
     "tests",
+    "output",
     "Request",
 ]

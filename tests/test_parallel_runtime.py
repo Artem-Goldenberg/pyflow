@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 from dataclasses import dataclass, field
@@ -8,9 +9,19 @@ from typing import cast, Sequence
 import pytest
 from openhands.sdk import BaseConversation, LLM, Message, TextContent
 from openhands.sdk.llm import MessageToolCall
+from pydantic import BaseModel
 from pydantic import SecretStr
 
-from pyflow import AIModel, Agent, Model, ParallelFailure, Request, Session, TestModel
+from pyflow import (
+    AIModel,
+    Agent,
+    Model,
+    ParallelFailure,
+    Request,
+    Session,
+    TestModel,
+    output,
+)
 
 
 def test_ai_model_fresh_runtime_model_clones_llm_and_resets_metrics() -> None:
@@ -227,6 +238,24 @@ def test_parallel_with_test_model_uses_fresh_worker_models() -> None:
     assert [cast(Session, result).agent for result in results] == [agent, agent, agent]
 
 
+def test_parallel_sessions_preserve_structured_output_contract() -> None:
+    payload = json.dumps({"label": "ok"})
+    model = Model.test(scripted_responses=(_finish_message("shared", message=payload),))
+    agent = Agent(model=model, tools=())
+
+    results = agent.parallel(
+        ["one", "two"],
+        lambda item: f"Summarize {item}" // output(_ParallelSummary),
+    )
+
+    assert all(isinstance(result, Session) for result in results)
+    assert [cast(Session, result).result_text for result in results] == [payload, payload]
+    assert [cast(_ParallelSummary, cast(Session, result).result).label for result in results] == [
+        "ok",
+        "ok",
+    ]
+
+
 def _assistant_message(text: str) -> Message:
     return Message(role="assistant", content=[TextContent(text=text)])
 
@@ -244,7 +273,7 @@ def _finish_message(call_id: str, message: str = "Done") -> Message:
             MessageToolCall(
                 id=call_id,
                 name="finish",
-                arguments=f'{{"message": "{message}"}}',
+                arguments=json.dumps({"message": message}),
                 origin="completion",
             )
         ],
@@ -257,6 +286,10 @@ def _message_text(message: Message) -> str:
         if isinstance(item, TextContent):
             parts.append(item.text)
     return "\n".join(parts)
+
+
+class _ParallelSummary(BaseModel):
+    label: str
 
 
 def _request_label(request: Request) -> str:

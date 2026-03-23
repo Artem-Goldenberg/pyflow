@@ -1,8 +1,12 @@
 from __future__ import annotations
 
-import pytest
 from pathlib import Path
-from pyflow import PromptStep, Request, TestStep, code, docs, tests
+from typing import cast
+
+import pytest
+from pydantic import BaseModel
+
+from pyflow import PromptStep, Request, TestStep, code, docs, output, tests
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -53,6 +57,50 @@ def test_operator_precedence_attaches_to_test_step() -> None:
     assert len(request.steps[1].attachments) == 1
 
 
+def test_prompt_floordiv_output_creates_request() -> None:
+    request = "Summarize the chunk." // output(_ChunkSummary)
+
+    assert isinstance(request, Request)
+    assert request.output_spec is not None
+    assert request.output_spec.model_type is _ChunkSummary
+
+
+def test_request_floordiv_output_is_immutable() -> None:
+    base = "Summarize the chunk."
+    request = base // output(_ChunkSummary)
+    updated = request >> tests("unit")
+
+    assert request.output_spec is not None
+    assert updated.output_spec is request.output_spec
+    assert len(request.steps) == 1
+    assert len(updated.steps) == 2
+
+
+def test_operator_precedence_attaches_output_before_rshift() -> None:
+    request = "Summarize the chunk." // output(_ChunkSummary) >> tests("unit")
+
+    assert request.output_spec is not None
+    assert len(request.steps) == 2
+    assert isinstance(request.steps[1], TestStep)
+
+
+def test_output_contract_rejects_later_step_attachment() -> None:
+    with pytest.raises(ValueError, match="request root"):
+        _ = output(_ChunkSummary).__rfloordiv__(tests("unit"))
+
+
+def test_request_rejects_duplicate_output_contract() -> None:
+    request = "Summarize the chunk." // output(_ChunkSummary)
+
+    with pytest.raises(ValueError, match="already has an output contract"):
+        _ = request // output(_ChunkSummary)
+
+
+def test_output_rejects_non_pydantic_models() -> None:
+    with pytest.raises(TypeError, match="BaseModel"):
+        output(cast(type[BaseModel], dict))
+
+
 def test_request_rejects_empty_steps() -> None:
     with pytest.raises(ValueError):
         Request(steps=())
@@ -86,10 +134,24 @@ def test_request_render_many_steps(snapshot_regen: bool) -> None:
     assert_snapshot("request_many_steps", rendered, snapshot_regen)
 
 
+def test_request_render_with_output_contract(snapshot_regen: bool) -> None:
+    request = "Summarize the chunk." @ docs("notes.md") // output(_ChunkSummary) >> tests(
+        "unit"
+    )
+    rendered = request.render()
+
+    assert_snapshot("request_output_contract", rendered, snapshot_regen)
+
+
 def assert_snapshot(name: str, content: str, regen: bool) -> None:
     path = FIXTURES_DIR / f"{name}.txt"
     if regen:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
     expected = path.read_text(encoding="utf-8")
-    assert content == expected
+    assert content.rstrip("\n") == expected.rstrip("\n")
+
+
+class _ChunkSummary(BaseModel):
+    source: str
+    row_count: int

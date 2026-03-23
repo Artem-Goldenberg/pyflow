@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Sequence
 
 from openhands.sdk import BaseConversation, Event
+from pydantic import BaseModel
 from rich.console import Console, ConsoleOptions, RenderResult
 
 from pyflow.display import (
@@ -14,6 +15,7 @@ from pyflow.display import (
     should_suppress_live_inspection,
     sync_interactive_session,
 )
+from pyflow.output import OutputSpec, extract_session_result_text
 from pyflow.session_rendering import (
     SessionTranscript,
     _SessionRenderView,
@@ -33,8 +35,19 @@ class Session:
 
     agent: Agent
     conversation: BaseConversation
+    output_spec: OutputSpec[BaseModel] | None = None
     _notebook_widget: NotebookSessionWidget | None = field(
         default=None,
+        init=False,
+        repr=False,
+    )
+    _cached_result: BaseModel | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _cached_result_event_count: int = field(
+        default=-1,
         init=False,
         repr=False,
     )
@@ -58,10 +71,35 @@ class Session:
         """Structured transcript built from the current event stream."""
         return self._build_transcript(view=_SessionRenderView.LIVE)
 
+    @property
+    def result_text(self) -> str:
+        """Raw text returned by the latest completed finish observation."""
+        return extract_session_result_text(self)
+
+    @property
+    def result(self) -> BaseModel | str:
+        """Return either the parsed structured result or the raw finish text."""
+        if self.output_spec is None:
+            return self.result_text
+
+        event_count = len(self.events)
+        if self._cached_result is not None and self._cached_result_event_count == event_count:
+            return self._cached_result
+
+        parsed_result = self.output_spec.parse_result(self.result_text)
+        self._cached_result = parsed_result
+        self._cached_result_event_count = event_count
+        return parsed_result
+
     def __rrshift__(self, lhs: RequestInput) -> Session:
         """Continue this session with request-like input via ``>>``."""
         request = convert_to_request(lhs)
+        if request.output_spec is not None:
+            raise ValueError(
+                "Structured output is only supported on fresh runs, not session continuations."
+            )
         start_event_index = len(self.events)
+        self._clear_output_state()
         self.agent.append_message(self.conversation, request)
         prepare_live_render(self.conversation, start_event_index=start_event_index)
         self.conversation.run()
@@ -218,3 +256,8 @@ class Session:
             execution_status=self.execution_status,
             view=view,
         )
+
+    def _clear_output_state(self) -> None:
+        self.output_spec = None
+        self._cached_result = None
+        self._cached_result_event_count = -1

@@ -253,7 +253,11 @@ class Agent:
             interactive=interactive,
         )
         self.append_message(conversation, request, include_global_context=True)
-        return Session(agent=self, conversation=conversation)
+        return Session(
+            agent=self,
+            conversation=conversation,
+            output_spec=request.output_spec,
+        )
 
     def _run_prepared_session(
         self,
