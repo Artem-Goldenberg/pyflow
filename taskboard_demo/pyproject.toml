@@ -1,0 +1,22 @@
+[project]
+name = "taskboard-demo"
+version = "0.1.0"
+description = "Purpose-built repository for a pyflow multi-agent worktree demo"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.hatch.build.targets.wheel]
+packages = ["taskboard"]
