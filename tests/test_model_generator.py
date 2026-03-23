@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import re
 import sys
+from email.message import Message
 from pathlib import Path
 from types import ModuleType
-from urllib import request
+from urllib import error, request
 
 import pytest
+from pydantic import SecretStr
 
 import pyflow.model_generator as model_generator
-from pyflow import AIModel
+from pyflow import Model
 
 
 def test_extract_model_ids_supports_common_payload_shapes() -> None:
@@ -69,12 +72,49 @@ def test_generate_models_file_preserves_other_provider_blocks(tmp_path: Path) ->
         provider_name="second",
     )
 
-    assert "qwen_72b" in first_provider_block
-    assert "qwen_16b" not in first_provider_block
+    assert "class Models:" in final_content
+    assert "    first:" in final_content
+    assert "def b72(self) -> Model:" in first_provider_block
+    assert "def b16(self) -> Model:" not in first_provider_block
     assert second_provider_block_after == second_provider_block_before
 
 
-def test_generated_models_expose_nested_and_flat_lazy_aliases(
+def test_generate_models_file_upgrades_legacy_provider_blocks(tmp_path: Path) -> None:
+    output = tmp_path / "generated_models.py"
+    output.write_text(
+        "\n".join(
+            [
+                "# >>> PYFLOW_PROVIDER_MODELS_START: legacy",
+                "class _LegacyProviderModels:",
+                "    qwen_16b: _LazyModelReference = _LazyModelReference(",
+                "        model_id='qwen-16b',",
+                "        base_url='https://legacy.example/v1',",
+                "        api_key_env_var='API_KEY',",
+                "    )",
+                "",
+                "Models.legacy = _LegacyProviderModels()",
+                "# <<< PYFLOW_PROVIDER_MODELS_END: legacy",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    model_generator.generate_models_file(
+        provider_name="legacy",
+        base_url="https://legacy.example/v2",
+        model_ids=("qwen-72b",),
+        output_path=output,
+    )
+
+    content = output.read_text(encoding="utf-8")
+
+    assert "class Models:" in content
+    assert "legacy:" in content
+    assert "_create_model(" in content
+    assert "_LazyModelReference(" not in content
+
+
+def test_generated_models_expose_two_level_namespaces_and_lazy_properties(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -87,27 +127,75 @@ def test_generated_models_expose_nested_and_flat_lazy_aliases(
     )
 
     generated = _load_module(module_path=output, module_name="generated_models_runtime_test")
-    flat_reference = generated.Models.qwen_16b
-    provider_reference = generated.Models.qw.qwen_16b
-    nested_reference = generated.Models.qw.qwen.small.b16
+    provider_models = generated.Models.qw
+    family_models = provider_models.qwen
 
-    assert flat_reference is provider_reference
-    assert not isinstance(flat_reference, AIModel)
+    assert provider_models is generated.Models.qw
+    assert family_models is provider_models.qwen
+    assert not hasattr(provider_models, "qwen_16b")
+    assert not hasattr(provider_models, "qwen_small_16b")
 
-    explicit_model = flat_reference(api_key="manual-key")
-    assert isinstance(explicit_model, AIModel)
-    assert explicit_model.name == "qwen-16b"
-    assert explicit_model.base_url == "https://provider.example/v1"
-    assert explicit_model.api_key.get_secret_value() == "manual-key"
+    monkeypatch.setenv("API_KEY", "manual-key")
+    base_model = family_models.b16
+    assert isinstance(base_model, Model)
+    explicit_llm = base_model.inner_llm
+    assert explicit_llm is base_model.inner_llm
+    assert explicit_llm.model == "qwen-16b"
+    assert explicit_llm.base_url == "https://provider.example/v1"
+    assert isinstance(explicit_llm.api_key, SecretStr)
+    assert explicit_llm.api_key.get_secret_value() == "manual-key"
 
     monkeypatch.delenv("API_KEY", raising=False)
     with pytest.raises(ValueError, match="Missing API key"):
-        _ = flat_reference()
+        _ = family_models.small_b16
 
     monkeypatch.setenv("API_KEY", "from-env")
-    env_model = nested_reference()
-    assert env_model.name == "qwen-small-16b"
-    assert env_model.api_key.get_secret_value() == "from-env"
+    small_model = family_models.small_b16
+    assert isinstance(small_model, Model)
+    env_llm = small_model.inner_llm
+    assert env_llm.model == "qwen-small-16b"
+    assert isinstance(env_llm.api_key, SecretStr)
+    assert env_llm.api_key.get_secret_value() == "from-env"
+
+
+def test_generated_models_flatten_provider_named_models(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "generated_models.py"
+    model_generator.generate_models_file(
+        provider_name="mix",
+        base_url="https://provider.example/v1",
+        model_ids=("groq/compound", "groq/compound-mini"),
+        output_path=output,
+    )
+
+    generated = _load_module(module_path=output, module_name="generated_models_branch_test")
+
+    monkeypatch.setenv("API_KEY", "manual-key")
+    assert isinstance(generated.Models.mix.compound, Model)
+    assert isinstance(generated.Models.mix.compound_mini, Model)
+    assert not hasattr(generated.Models.mix, "groq")
+
+
+def test_generated_models_flatten_repeated_family_names(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "generated_models.py"
+    model_generator.generate_models_file(
+        provider_name="groq",
+        base_url="https://provider.example/v1",
+        model_ids=("qwen/qwen3-32b", "groq/compound-mini"),
+        output_path=output,
+    )
+
+    generated = _load_module(module_path=output, module_name="generated_models_flatten_test")
+
+    monkeypatch.setenv("API_KEY", "manual-key")
+    assert isinstance(generated.Models.groq.qwen.b32, Model)
+    assert isinstance(generated.Models.groq.compound_mini, Model)
+    assert not hasattr(generated.Models.groq.qwen, "qwen3_b32")
 
 
 def test_discover_provider_models_calls_models_endpoint(
@@ -121,6 +209,7 @@ def test_discover_provider_models_calls_models_endpoint(
     ) -> _FakeHTTPResponse:
         captured["url"] = http_request.full_url
         captured["auth"] = http_request.headers.get("Authorization")
+        captured["user_agent"] = http_request.headers.get("User-agent")
         captured["timeout"] = timeout
         return _FakeHTTPResponse(
             b'{"data":[{"id":"first-model"},{"id":"second-model"}]}'
@@ -138,15 +227,42 @@ def test_discover_provider_models_calls_models_endpoint(
     assert discovered == ("first-model", "second-model")
     assert captured["url"] == "https://provider.example/v1/models"
     assert captured["auth"] == "Bearer test-token"
+    assert captured["user_agent"] == model_generator.DEFAULT_HTTP_USER_AGENT
     assert captured["timeout"] == 12.5
+
+
+def test_discover_provider_models_surfaces_http_error_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_urlopen(
+        http_request: request.Request,
+        timeout: float,
+    ) -> _FakeHTTPResponse:
+        raise error.HTTPError(
+            url=http_request.full_url,
+            code=403,
+            msg="Forbidden",
+            hdrs=Message(),
+            fp=io.BytesIO(b'{"detail":"browser_signature_banned"}'),
+        )
+
+    monkeypatch.setattr(model_generator.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(RuntimeError, match="browser_signature_banned"):
+        model_generator.discover_provider_models(
+            base_url="https://provider.example/v1",
+            api_key="test-token",
+        )
 
 
 def _extract_provider_block(*, content: str, provider_name: str) -> str:
     start_marker = f"# >>> PYFLOW_PROVIDER_MODELS_START: {provider_name}"
     end_marker = f"# <<< PYFLOW_PROVIDER_MODELS_END: {provider_name}"
     pattern = (
+        r"[ \t]*"
         f"{re.escape(start_marker)}"
         r"\n.*?\n"
+        r"[ \t]*"
         f"{re.escape(end_marker)}"
     )
     match = re.search(pattern, content, flags=re.DOTALL)

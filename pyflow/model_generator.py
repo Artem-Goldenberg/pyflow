@@ -1,38 +1,44 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import keyword
 import os
 import re
-from dataclasses import dataclass, field
+import textwrap
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
-from urllib import request
+from urllib import error, request
 
 from pydantic import SecretStr
 
 
-DEFAULT_GENERATED_MODELS_PATH = Path("pyflow/generated_models.py")
+DEFAULT_GENERATED_MODELS_PATH = Path("pyflow/_generated/models.py")
 DEFAULT_API_KEY_ENV_VAR = "API_KEY"
+DEFAULT_HTTP_USER_AGENT = "pyflow/0.1"
 
 _SUPPORT_BLOCK_START = "# >>> PYFLOW_MODELS_SUPPORT_START"
 _SUPPORT_BLOCK_END = "# <<< PYFLOW_MODELS_SUPPORT_END"
 _PROVIDER_BLOCK_START_PREFIX = "# >>> PYFLOW_PROVIDER_MODELS_START: "
 _PROVIDER_BLOCK_END_PREFIX = "# <<< PYFLOW_PROVIDER_MODELS_END: "
+_PROVIDER_SPEC_COMMENT_PREFIX = "# PYFLOW_PROVIDER_SPEC "
 
 
 @dataclass(frozen=True, kw_only=True)
 class _ModelEntry:
     model_id: str
-    flat_alias: str
-    nested_path: Sequence[str]
+    provider_alias: str
+    model_alias: str | None
 
 
-@dataclass(kw_only=True)
-class _NamespaceNode:
-    model: _ModelEntry | None = None
-    children: dict[str, _NamespaceNode] = field(default_factory=dict)
+@dataclass(frozen=True, kw_only=True)
+class _ProviderSpec:
+    provider_name: str
+    base_url: str
+    api_key_env_var: str
+    model_ids: Sequence[str]
 
 
 def generate_models_from_provider(
@@ -176,44 +182,18 @@ def generate_models_file(
     provider_alias = _validate_provider_name(provider_name)
     output = Path(output_path)
     existing_content = output.read_text(encoding="utf-8") if output.exists() else ""
-
-    content_with_support = _upsert_support_block(existing_content)
-    provider_block = _render_provider_block(
+    provider_specs = _extract_provider_specs(existing_content)
+    provider_specs[provider_alias] = _ProviderSpec(
         provider_name=provider_alias,
         base_url=base_url.rstrip("/"),
-        model_ids=model_ids,
         api_key_env_var=api_key_env_var,
-        existing_content=content_with_support,
+        model_ids=_normalize_model_ids(model_ids),
     )
-    next_content = upsert_provider_block(
-        content=content_with_support,
-        provider_name=provider_alias,
-        provider_block=provider_block,
-    )
+    next_content = _render_models_module(tuple(provider_specs.values()))
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(next_content.rstrip() + "\n", encoding="utf-8")
     return output
-
-
-def upsert_provider_block(
-    *,
-    content: str,
-    provider_name: str,
-    provider_block: str,
-) -> str:
-    """
-    Replace or append a provider-generated block while preserving others.
-    """
-    start_marker = _provider_block_start(provider_name)
-    end_marker = _provider_block_end(provider_name)
-    return _upsert_block(
-        content=content,
-        start_marker=start_marker,
-        end_marker=end_marker,
-        block=provider_block.strip(),
-        prepend_if_missing=False,
-    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -289,13 +269,25 @@ def _request_models_payload(
     timeout_seconds: float,
 ) -> object:
     endpoint = _join_url(base_url.rstrip("/"), models_path)
-    headers = {"Accept": "application/json"}
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": DEFAULT_HTTP_USER_AGENT,
+    }
     if api_key is not None:
         headers["Authorization"] = f"Bearer {api_key}"
     http_request = request.Request(endpoint, headers=headers, method="GET")
 
-    with request.urlopen(http_request, timeout=timeout_seconds) as response:
-        raw_payload = response.read()
+    try:
+        with request.urlopen(http_request, timeout=timeout_seconds) as response:
+            raw_payload = response.read()
+    except error.HTTPError as exc:
+        error_body = exc.read().decode("utf-8", errors="replace").strip()
+        message = f"HTTP Error {exc.code}: {exc.reason}"
+        if error_body:
+            message = f"{message}\n{error_body}"
+        raise RuntimeError(
+            f"Provider model discovery request failed for {endpoint}.\n{message}"
+        ) from exc
     return json.loads(raw_payload.decode("utf-8"))
 
 
@@ -332,67 +324,29 @@ def _validate_provider_name(value: str) -> str:
     return alias
 
 
-def _upsert_support_block(content: str) -> str:
-    return _upsert_block(
-        content=content,
-        start_marker=_SUPPORT_BLOCK_START,
-        end_marker=_SUPPORT_BLOCK_END,
-        block=_render_support_block(),
-        prepend_if_missing=True,
-    )
-
-
 def _render_support_block() -> str:
     return "\n".join(
         [
             _SUPPORT_BLOCK_START,
             "from __future__ import annotations",
             "",
-            "from dataclasses import dataclass",
             "import os",
             "",
             "from pydantic import SecretStr",
             "",
-            "from pyflow.model import AIModel",
+            "from pyflow.model import Model",
             "",
             "",
-            "@dataclass(frozen=True, kw_only=True)",
-            "class _LazyModelReference:",
-            "    model_id: str",
-            "    base_url: str",
-            "    api_key_env_var: str = \"API_KEY\"",
-            "",
-            "    def __call__(",
-            "        self,",
-            "        *,",
-            "        api_key: str | SecretStr | None = None,",
-            "        max_input_tokens: int | None = None,",
-            "        max_output_tokens: int | None = None,",
-            "    ) -> AIModel:",
-            "        resolved_key = _resolve_api_key(",
-            "            api_key=api_key,",
-            "            api_key_env_var=self.api_key_env_var,",
-            "        )",
-            "        return AIModel(",
-            "            name=self.model_id,",
-            "            base_url=self.base_url,",
-            "            api_key=resolved_key,",
-            "            max_input_tokens=max_input_tokens,",
-            "            max_output_tokens=max_output_tokens,",
-            "        )",
-            "",
-            "    def build(",
-            "        self,",
-            "        *,",
-            "        api_key: str | SecretStr | None = None,",
-            "        max_input_tokens: int | None = None,",
-            "        max_output_tokens: int | None = None,",
-            "    ) -> AIModel:",
-            "        return self(",
-            "            api_key=api_key,",
-            "            max_input_tokens=max_input_tokens,",
-            "            max_output_tokens=max_output_tokens,",
-            "        )",
+            "def _create_model(*, model_id: str, base_url: str, api_key_env_var: str) -> Model:",
+            "    resolved_key = _resolve_api_key(",
+            "        api_key=None,",
+            "        api_key_env_var=api_key_env_var,",
+            "    )",
+            "    return Model.from_api(",
+            "        name=model_id,",
+            "        base_url=base_url,",
+            "        api_key=resolved_key,",
+            "    )",
             "",
             "",
             "def _resolve_api_key(*, api_key: str | SecretStr | None, api_key_env_var: str) -> SecretStr:",
@@ -411,159 +365,187 @@ def _render_support_block() -> str:
             "        \"Missing API key. Pass api_key=... explicitly or set \"",
             "        f\"{api_key_env_var} in the environment.\"",
             "    )",
-            "",
-            "",
-            "class Models:",
-            "    \"\"\"Generated provider model registry. Regenerate with pyflow.model_generator.\"\"\"",
-            "    pass",
             _SUPPORT_BLOCK_END,
         ]
     )
 
 
-def _render_provider_block(
+def _render_models_module(provider_specs: Sequence[_ProviderSpec]) -> str:
+    lines = [
+        _render_support_block(),
+        "",
+        "",
+        "class Models:",
+        "    \"\"\"Generated provider model registry. Regenerate with pyflow.model_generator.\"\"\"",
+    ]
+
+    if not provider_specs:
+        lines.append("    pass")
+        return "\n".join(lines).rstrip()
+
+    for provider_spec in provider_specs:
+        lines.append("")
+        lines.extend(_render_provider_block(provider_spec))
+
+    return "\n".join(lines).rstrip()
+
+
+def _render_provider_block(provider_spec: _ProviderSpec) -> Sequence[str]:
+    entries = _build_model_entries(
+        provider_name=provider_spec.provider_name,
+        model_ids=provider_spec.model_ids,
+    )
+    provider_class_name = f"_{_pascal_case(provider_spec.provider_name)}ProviderModels"
+    grouped_entries = _group_entries_by_provider_alias(entries)
+    helper_blocks: list[str] = []
+
+    for provider_alias, family_entries in grouped_entries.items():
+        if not _is_family_group(family_entries):
+            continue
+        helper_blocks.extend(
+            _render_family_class_block(
+                provider_name=provider_spec.provider_name,
+                family_alias=provider_alias,
+                entries=family_entries,
+                base_url=provider_spec.base_url,
+                api_key_env_var=provider_spec.api_key_env_var,
+            )
+        )
+        helper_blocks.append("")
+
+    helper_blocks.extend(
+        _render_provider_class_block(
+            provider_name=provider_spec.provider_name,
+            provider_class_name=provider_class_name,
+            grouped_entries=grouped_entries,
+            base_url=provider_spec.base_url,
+            api_key_env_var=provider_spec.api_key_env_var,
+        )
+    )
+
+    metadata_comment = _render_provider_spec_comment(provider_spec)
+    return (
+        f"    {_provider_block_start(provider_spec.provider_name)}",
+        f"    {metadata_comment}",
+        *helper_blocks,
+        f"    {provider_spec.provider_name}: {provider_class_name} = {provider_class_name}()",
+        f"    {_provider_block_end(provider_spec.provider_name)}",
+    )
+
+
+def _build_model_entries(
     *,
     provider_name: str,
-    base_url: str,
     model_ids: Sequence[str],
-    api_key_env_var: str,
-    existing_content: str,
-) -> str:
-    entries = _build_model_entries(model_ids)
-    namespace_tree = _build_namespace_tree(entries)
-    class_blocks, root_group_bindings = _render_nested_namespace_blocks(
-        provider_name=provider_name,
-        tree=namespace_tree,
-        base_url=base_url,
-        api_key_env_var=api_key_env_var,
-    )
-
-    provider_class_name = f"_{_pascal_case(provider_name)}ProviderModels"
-    provider_lines: list[str] = [f"class {provider_class_name}:"]
-    provider_body: list[str] = []
-
-    for group_name, class_name in root_group_bindings:
-        provider_body.append(f"    {group_name}: {class_name} = {class_name}()")
-
-    for entry in entries:
-        provider_body.append(
-            "    "
-            + _render_model_assignment_line(
-                alias=entry.flat_alias,
-                model_id=entry.model_id,
-                base_url=base_url,
-                api_key_env_var=api_key_env_var,
-            )
-        )
-
-    if not provider_body:
-        provider_body.append("    pass")
-
-    provider_lines.extend(provider_body)
-
-    existing_global_aliases = _collect_existing_global_aliases(
-        content=existing_content,
-        excluding_provider=provider_name,
-    )
-    models_bindings: list[str] = [
-        f"Models.{provider_name} = {provider_class_name}()",
+) -> Sequence[_ModelEntry]:
+    ordered_ids = _normalize_model_ids(model_ids)
+    raw_plans = [
+        (model_id, *_classify_model_id(provider_name=provider_name, model_id=model_id))
+        for model_id in ordered_ids
     ]
-    existing_global_aliases.add(provider_name)
-
-    for entry in entries:
-        provider_prefixed_alias = f"{provider_name}_{entry.flat_alias}"
-        models_bindings.append(
-            f"Models.{provider_prefixed_alias} = Models.{provider_name}.{entry.flat_alias}"
+    direct_provider_aliases = {
+        provider_alias
+        for _, provider_alias, model_alias in raw_plans
+        if model_alias is None
+    }
+    planned_entries = [
+        (
+            model_id,
+            f"{provider_alias}_{model_alias}",
+            None,
         )
-        existing_global_aliases.add(provider_prefixed_alias)
-
-        if entry.flat_alias not in existing_global_aliases:
-            models_bindings.append(
-                f"Models.{entry.flat_alias} = Models.{provider_name}.{entry.flat_alias}"
-            )
-            existing_global_aliases.add(entry.flat_alias)
-
-    block_lines = [
-        _provider_block_start(provider_name),
-        *class_blocks,
-        "",
-        *provider_lines,
-        "",
-        *models_bindings,
-        _provider_block_end(provider_name),
+        if model_alias is not None and provider_alias in direct_provider_aliases
+        else (model_id, provider_alias, model_alias)
+        for model_id, provider_alias, model_alias in raw_plans
     ]
-    return "\n".join(block_lines).rstrip()
+    family_aliases = {
+        provider_alias
+        for _, provider_alias, model_alias in planned_entries
+        if model_alias is not None
+    }
+    used_provider_aliases = set(family_aliases)
+    used_model_aliases: dict[str, set[str]] = {
+        provider_alias: set()
+        for provider_alias in family_aliases
+    }
+    entries: list[_ModelEntry] = []
 
-
-def _build_model_entries(model_ids: Sequence[str]) -> Sequence[_ModelEntry]:
-    ordered_ids: list[str] = []
-    seen_ids: set[str] = set()
-    for model_id in model_ids:
-        normalized = model_id.strip()
-        if not normalized or normalized in seen_ids:
+    for model_id, provider_alias_candidate, model_alias_candidate in planned_entries:
+        if model_alias_candidate is None:
+            provider_alias = _unique_alias(provider_alias_candidate, used_provider_aliases)
+            used_provider_aliases.add(provider_alias)
+            entries.append(
+                _ModelEntry(
+                    model_id=model_id,
+                    provider_alias=provider_alias,
+                    model_alias=None,
+                )
+            )
             continue
-        ordered_ids.append(normalized)
-        seen_ids.add(normalized)
 
-    if not ordered_ids:
-        raise ValueError("At least one non-empty model ID is required.")
-
-    flat_aliases: list[str] = []
-    used_flat_aliases: set[str] = set()
-    for model_id in ordered_ids:
-        candidate = _sanitize_identifier(model_id)
-        flat_alias = _unique_alias(candidate, used_flat_aliases)
-        flat_aliases.append(flat_alias)
-        used_flat_aliases.add(flat_alias)
-
-    nested_paths: list[Sequence[str]] = []
-    used_paths: set[tuple[str, ...]] = set()
-    for model_id in ordered_ids:
-        nested_path = _nested_path_for_model(model_id)
-        if len(nested_path) >= 2:
-            unique_path = _unique_nested_path(nested_path, used_paths)
-            nested_paths.append(unique_path)
-            used_paths.add(tuple(unique_path))
-        else:
-            nested_paths.append(())
-
-    return tuple(
-        _ModelEntry(
-            model_id=model_id,
-            flat_alias=flat_alias,
-            nested_path=path,
+        concrete_alias = _unique_alias(
+            model_alias_candidate,
+            used_model_aliases[provider_alias_candidate],
         )
-        for model_id, flat_alias, path in zip(
-            ordered_ids,
-            flat_aliases,
-            nested_paths,
-            strict=True,
+        used_model_aliases[provider_alias_candidate].add(concrete_alias)
+        entries.append(
+            _ModelEntry(
+                model_id=model_id,
+                provider_alias=provider_alias_candidate,
+                model_alias=concrete_alias,
+            )
         )
-    )
+
+    return tuple(entries)
 
 
-def _nested_path_for_model(model_id: str) -> Sequence[str]:
-    raw_tokens = [token for token in re.split(r"[\/._-]+", model_id) if token]
+def _classify_model_id(*, provider_name: str, model_id: str) -> tuple[str, str | None]:
+    segments = [segment for segment in model_id.split("/") if segment]
+    provider_alias = _sanitize_identifier(provider_name)
+    target = segments[-1] if segments else model_id
+
+    if len(segments) > 1 and _sanitize_identifier(segments[0]) == provider_alias:
+        return (_sanitize_identifier(target), None)
+
+    raw_tokens = [token for token in re.split(r"[._-]+", target) if token]
     if len(raw_tokens) < 2:
-        return ()
+        return (_sanitize_identifier(target), None)
 
-    aliases: list[str] = []
-    for token in raw_tokens:
-        token_alias = _sanitize_nested_token(token)
-        if token_alias:
-            aliases.append(token_alias)
-    return tuple(aliases)
+    family_alias = _normalize_family_alias(raw_tokens[0])
+    concrete_tokens = list(raw_tokens[1:])
+    while len(concrete_tokens) > 1 and re.fullmatch(r"\d+", concrete_tokens[0]) is not None:
+        concrete_tokens.pop(0)
+
+    concrete_alias = _alias_from_tokens(concrete_tokens)
+    if concrete_alias == "model":
+        return (_sanitize_identifier(target), None)
+    return (family_alias, concrete_alias)
 
 
-def _sanitize_nested_token(token: str) -> str:
+def _normalize_family_alias(token: str) -> str:
+    lowered = token.strip().lower()
+    match = re.fullmatch(r"([a-z]+)\d+", lowered)
+    if match is not None:
+        lowered = match.group(1)
+    return _sanitize_identifier(lowered)
+
+
+def _alias_from_tokens(tokens: Sequence[str]) -> str:
+    aliases = [_sanitize_model_token(token) for token in tokens]
+    filtered_aliases = [alias for alias in aliases if alias]
+    if not filtered_aliases:
+        return "model"
+    return "_".join(filtered_aliases)
+
+
+def _sanitize_model_token(token: str) -> str:
     lowered = token.strip().lower()
     if not lowered:
         return ""
     size_match = re.fullmatch(r"(\d+)([bkmt])", lowered)
     if size_match is not None:
         lowered = f"{size_match.group(2)}{size_match.group(1)}"
-    alias = _sanitize_identifier(lowered)
-    return alias
+    return _sanitize_identifier(lowered)
 
 
 def _sanitize_identifier(value: str) -> str:
@@ -590,184 +572,308 @@ def _unique_alias(candidate: str, used_aliases: set[str]) -> str:
         suffix += 1
 
 
-def _unique_nested_path(
-    path: Sequence[str],
-    used_paths: set[tuple[str, ...]],
-) -> Sequence[str]:
-    as_tuple = tuple(path)
-    if as_tuple not in used_paths:
-        return as_tuple
-
-    base_segments = list(path[:-1])
-    leaf = path[-1]
-    suffix = 2
-    while True:
-        updated = tuple((*base_segments, f"{leaf}_{suffix}"))
-        if updated not in used_paths:
-            return updated
-        suffix += 1
-
-
-def _build_namespace_tree(entries: Sequence[_ModelEntry]) -> _NamespaceNode:
-    root = _NamespaceNode()
-    for entry in entries:
-        if len(entry.nested_path) < 2:
+def _normalize_model_ids(model_ids: Sequence[str]) -> Sequence[str]:
+    ordered_ids: list[str] = []
+    seen_ids: set[str] = set()
+    for model_id in model_ids:
+        normalized = model_id.strip()
+        if not normalized or normalized in seen_ids:
             continue
-        node = root
-        for segment in entry.nested_path:
-            node = node.children.setdefault(segment, _NamespaceNode())
-        node.model = entry
-    return root
+        ordered_ids.append(normalized)
+        seen_ids.add(normalized)
+
+    if not ordered_ids:
+        raise ValueError("At least one non-empty model ID is required.")
+
+    return tuple(ordered_ids)
 
 
-def _render_nested_namespace_blocks(
+def _group_entries_by_provider_alias(
+    entries: Sequence[_ModelEntry],
+) -> dict[str, list[_ModelEntry]]:
+    grouped: dict[str, list[_ModelEntry]] = {}
+    for entry in entries:
+        grouped.setdefault(entry.provider_alias, []).append(entry)
+    return grouped
+
+
+def _is_family_group(entries: Sequence[_ModelEntry]) -> bool:
+    return any(entry.model_alias is not None for entry in entries)
+
+
+def _render_family_class_block(
     *,
     provider_name: str,
-    tree: _NamespaceNode,
+    family_alias: str,
+    entries: Sequence[_ModelEntry],
     base_url: str,
     api_key_env_var: str,
-) -> tuple[Sequence[str], Sequence[tuple[str, str]]]:
-    blocks: list[str] = []
-    root_group_bindings: list[tuple[str, str]] = []
+) -> Sequence[str]:
+    class_name = _family_class_name(provider_name=provider_name, family_alias=family_alias)
+    lines = [f"    class {class_name}:"]
+    body: list[str] = []
 
-    def visit(node: _NamespaceNode, path: Sequence[str]) -> str:
-        class_name = _namespace_class_name(provider_name, path)
-        child_lines: list[str] = []
-
-        if node.model is not None:
-            child_lines.append(
-                "    "
-                + _render_model_assignment_line(
-                    alias="model",
-                    model_id=node.model.model_id,
-                    base_url=base_url,
-                    api_key_env_var=api_key_env_var,
-                )
-            )
-
-        for child_name in sorted(node.children):
-            child_node = node.children[child_name]
-            if child_node.children:
-                nested_class_name = visit(child_node, (*path, child_name))
-                child_lines.append(
-                    f"    {child_name}: {nested_class_name} = {nested_class_name}()"
-                )
-                continue
-
-            if child_node.model is not None:
-                child_lines.append(
-                    "    "
-                    + _render_model_assignment_line(
-                        alias=child_name,
-                        model_id=child_node.model.model_id,
-                        base_url=base_url,
-                        api_key_env_var=api_key_env_var,
-                    )
-                )
-
-        if not child_lines:
-            child_lines.append("    pass")
-
-        class_block = "\n".join([f"class {class_name}:"] + child_lines)
-        blocks.append(class_block)
-        return class_name
-
-    for group_name in sorted(tree.children):
-        group_node = tree.children[group_name]
-        if group_node.children:
-            class_name = visit(group_node, (group_name,))
-            root_group_bindings.append((group_name, class_name))
+    for index, entry in enumerate(entries):
+        if entry.model_alias is None:
             continue
-        if group_node.model is None:
-            continue
-        class_name = _namespace_class_name(provider_name, (group_name,))
-        block_lines = [
-            f"class {class_name}:",
-            "    "
-            + _render_model_assignment_line(
-                alias="model",
-                model_id=group_node.model.model_id,
+        if index > 0 and body:
+            body.append("")
+        body.extend(
+            _render_model_property_block(
+                property_name=entry.model_alias,
+                cache_name=f"_{entry.model_alias}",
+                model_id=entry.model_id,
                 base_url=base_url,
                 api_key_env_var=api_key_env_var,
-            ),
-        ]
-        blocks.append("\n".join(block_lines))
-        root_group_bindings.append((group_name, class_name))
+                indent="        ",
+            )
+        )
 
-    return tuple(blocks), tuple(root_group_bindings)
+    if not body:
+        body.append("        pass")
+
+    return (*lines, *body)
 
 
-def _namespace_class_name(provider_name: str, path: Sequence[str]) -> str:
-    tokens = [provider_name, *path, "models"]
-    return "_" + "".join(_pascal_case(token) for token in tokens)
+def _render_provider_class_block(
+    *,
+    provider_name: str,
+    provider_class_name: str,
+    grouped_entries: dict[str, list[_ModelEntry]],
+    base_url: str,
+    api_key_env_var: str,
+) -> Sequence[str]:
+    lines = [f"    class {provider_class_name}:"]
+    body: list[str] = []
+
+    for provider_alias in sorted(grouped_entries):
+        entries = grouped_entries[provider_alias]
+        if body:
+            body.append("")
+
+        if _is_family_group(entries):
+            family_class_name = _family_class_name(
+                provider_name=provider_name,
+                family_alias=provider_alias,
+            )
+            body.extend(
+                _render_namespace_property_block(
+                    property_name=provider_alias,
+                    cache_name=f"_{provider_alias}",
+                    namespace_class_name=family_class_name,
+                    indent="        ",
+                )
+            )
+            continue
+
+        entry = entries[0]
+        body.extend(
+            _render_model_property_block(
+                property_name=entry.provider_alias,
+                cache_name=f"_{entry.provider_alias}",
+                model_id=entry.model_id,
+                base_url=base_url,
+                api_key_env_var=api_key_env_var,
+                indent="        ",
+            )
+        )
+
+    if not body:
+        body.append("        pass")
+
+    return (*lines, *body)
+
+
+def _render_namespace_property_block(
+    *,
+    property_name: str,
+    cache_name: str,
+    namespace_class_name: str,
+    indent: str,
+) -> Sequence[str]:
+    return (
+        f"{indent}{cache_name}: Models.{namespace_class_name} | None = None",
+        "",
+        f"{indent}@property",
+        f"{indent}def {property_name}(self) -> Models.{namespace_class_name}:",
+        f"{indent}    if self.{cache_name} is None:",
+        f"{indent}        self.{cache_name} = Models.{namespace_class_name}()",
+        f"{indent}    return self.{cache_name}",
+    )
+
+
+def _render_model_property_block(
+    *,
+    property_name: str,
+    cache_name: str,
+    model_id: str,
+    base_url: str,
+    api_key_env_var: str,
+    indent: str,
+) -> Sequence[str]:
+    return (
+        f"{indent}{cache_name}: Model | None = None",
+        "",
+        f"{indent}@property",
+        f"{indent}def {property_name}(self) -> Model:",
+        f"{indent}    if self.{cache_name} is None:",
+        f"{indent}        self.{cache_name} = _create_model(",
+        f"{indent}            model_id={model_id!r},",
+        f"{indent}            base_url={base_url!r},",
+        f"{indent}            api_key_env_var={api_key_env_var!r},",
+        f"{indent}        )",
+        f"{indent}    return self.{cache_name}",
+    )
+
+
+def _family_class_name(*, provider_name: str, family_alias: str) -> str:
+    return f"_{_pascal_case(provider_name)}{_pascal_case(family_alias)}Models"
 
 
 def _pascal_case(value: str) -> str:
     return "".join(part.capitalize() for part in value.split("_") if part) or "Value"
 
 
-def _render_model_assignment_line(
+def _render_provider_spec_comment(provider_spec: _ProviderSpec) -> str:
+    spec_payload = json.dumps(
+        {
+            "base_url": provider_spec.base_url,
+            "api_key_env_var": provider_spec.api_key_env_var,
+            "model_ids": list(provider_spec.model_ids),
+        },
+        sort_keys=True,
+    )
+    return f"{_PROVIDER_SPEC_COMMENT_PREFIX}{spec_payload}"
+
+
+def _extract_provider_specs(content: str) -> dict[str, _ProviderSpec]:
+    provider_specs: dict[str, _ProviderSpec] = {}
+    block_pattern = re.compile(
+        rf"(?ms)^[ \t]*{re.escape(_PROVIDER_BLOCK_START_PREFIX)}"
+        r"(?P<provider>[a-zA-Z_][a-zA-Z0-9_]*)[ \t]*\n"
+        r"(?P<body>.*?)"
+        rf"^[ \t]*{re.escape(_PROVIDER_BLOCK_END_PREFIX)}(?P=provider)[ \t]*$"
+    )
+    for match in block_pattern.finditer(content):
+        provider_name = match.group("provider")
+        provider_spec = _parse_provider_block(
+            provider_name=provider_name,
+            block_body=match.group("body"),
+        )
+        if provider_spec is not None:
+            provider_specs[provider_name] = provider_spec
+    return provider_specs
+
+
+def _parse_provider_block(
     *,
-    alias: str,
-    model_id: str,
-    base_url: str,
-    api_key_env_var: str,
-) -> str:
-    return (
-        f"{alias}: _LazyModelReference = _LazyModelReference("
-        f"model_id={model_id!r}, "
-        f"base_url={base_url!r}, "
-        f"api_key_env_var={api_key_env_var!r})"
+    provider_name: str,
+    block_body: str,
+) -> _ProviderSpec | None:
+    metadata_spec = _parse_provider_metadata_comment(
+        provider_name=provider_name,
+        block_body=block_body,
+    )
+    if metadata_spec is not None:
+        return metadata_spec
+
+    parsed = ast.parse(textwrap.dedent(block_body))
+    model_ids: list[str] = []
+    seen_ids: set[str] = set()
+    base_url: str | None = None
+    api_key_env_var: str | None = None
+
+    for node in ast.walk(parsed):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Name) or node.func.id not in {
+            "_GeneratedModel",
+            "_LazyModelReference",
+        }:
+            continue
+
+        keyword_nodes = {
+            keyword_node.arg: keyword_node.value
+            for keyword_node in node.keywords
+            if keyword_node.arg is not None
+        }
+        model_id = _string_literal(keyword_nodes.get("model_id"))
+        base_url_value = _string_literal(keyword_nodes.get("base_url"))
+        api_key_env_var_value = _string_literal(keyword_nodes.get("api_key_env_var"))
+        if (
+            model_id is None
+            or base_url_value is None
+            or api_key_env_var_value is None
+        ):
+            continue
+
+        if model_id not in seen_ids:
+            model_ids.append(model_id)
+            seen_ids.add(model_id)
+
+        if base_url is None:
+            base_url = base_url_value
+        if api_key_env_var is None:
+            api_key_env_var = api_key_env_var_value
+
+    if not model_ids or base_url is None or api_key_env_var is None:
+        return None
+
+    return _ProviderSpec(
+        provider_name=provider_name,
+        base_url=base_url,
+        api_key_env_var=api_key_env_var,
+        model_ids=tuple(model_ids),
     )
 
 
-def _collect_existing_global_aliases(
+def _parse_provider_metadata_comment(
     *,
-    content: str,
-    excluding_provider: str,
-) -> set[str]:
-    content_without_provider = _remove_provider_block(content, excluding_provider)
-    aliases = set(
-        re.findall(r"(?m)^Models\.([a-zA-Z_][a-zA-Z0-9_]*)\s*=", content_without_provider)
+    provider_name: str,
+    block_body: str,
+) -> _ProviderSpec | None:
+    match = re.search(
+        rf"(?m)^[ \t]*{re.escape(_PROVIDER_SPEC_COMMENT_PREFIX)}(?P<payload>{{.*}})$",
+        block_body,
     )
-    aliases.add("Models")
-    return aliases
+    if match is None:
+        return None
 
+    payload = json.loads(match.group("payload"))
+    if not isinstance(payload, dict):
+        return None
 
-def _remove_provider_block(content: str, provider_name: str) -> str:
-    start_marker = _provider_block_start(provider_name)
-    end_marker = _provider_block_end(provider_name)
-    pattern = (
-        f"{re.escape(start_marker)}"
-        r"\n.*?\n"
-        f"{re.escape(end_marker)}"
-    )
-    return re.sub(pattern, "", content, flags=re.DOTALL)
+    base_url = payload.get("base_url")
+    api_key_env_var = payload.get("api_key_env_var")
+    model_ids = payload.get("model_ids")
+    if (
+        not isinstance(base_url, str)
+        or not isinstance(api_key_env_var, str)
+        or not isinstance(model_ids, list)
+        or any(not isinstance(model_id, str) for model_id in model_ids)
+    ):
+        return None
 
-
-def _upsert_block(
-    *,
-    content: str,
-    start_marker: str,
-    end_marker: str,
-    block: str,
-    prepend_if_missing: bool,
-) -> str:
-    pattern = (
-        f"{re.escape(start_marker)}"
-        r"\n.*?\n"
-        f"{re.escape(end_marker)}"
+    return _ProviderSpec(
+        provider_name=provider_name,
+        base_url=base_url,
+        api_key_env_var=api_key_env_var,
+        model_ids=tuple(model_ids),
     )
 
-    if re.search(pattern, content, flags=re.DOTALL):
-        return re.sub(pattern, block, content, flags=re.DOTALL)
 
-    if not content.strip():
-        return block + "\n"
+def _string_literal(node: ast.AST | None) -> str | None:
+    if node is None:
+        return None
 
-    if prepend_if_missing:
-        return block.rstrip() + "\n\n" + content.lstrip()
-    return content.rstrip() + "\n\n" + block.rstrip() + "\n"
+    try:
+        value = ast.literal_eval(node)
+    except (SyntaxError, ValueError):
+        return None
+
+    if isinstance(value, str):
+        return value
+    return None
 
 
 def _provider_block_start(provider_name: str) -> str:
