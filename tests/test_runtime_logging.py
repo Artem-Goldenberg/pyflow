@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import io
+
 import logging
 
 import pytest
+from rich.console import Console
+from rich.logging import RichHandler
 
 from pyflow import Agent, Model
 from pyflow.notebook_visualizer import NotebookConversationVisualizer
@@ -81,6 +85,28 @@ def test_hide_and_show_backend_logs_adjust_backend_logger_levels(
     }
 
 
+def test_apply_default_jupyter_backend_log_policy_filters_blank_rich_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_test_backend_loggers(monkeypatch)
+    monkeypatch.setattr("pyflow.runtime_logging._explicit_backend_log_level", None)
+
+    root_logger = logging.getLogger()
+    original_handlers = list(root_logger.handlers)
+    rich_handler = RichHandler(console=Console(file=io.StringIO()))
+
+    try:
+        root_logger.handlers = [rich_handler]
+        apply_default_jupyter_backend_log_policy()
+
+        blank_record = _log_record(message="   ")
+        non_blank_record = _log_record(message="visible")
+        assert not rich_handler.filter(blank_record)
+        assert rich_handler.filter(non_blank_record)
+    finally:
+        root_logger.handlers = original_handlers
+
+
 def test_agent_run_uses_environment_visualizer_helper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -146,3 +172,15 @@ def _install_test_backend_loggers(
         logger.setLevel(logging.NOTSET)
         logger_map[name.rsplit(".", maxsplit=1)[-1]] = logger
     return logger_map
+
+
+def _log_record(message: str) -> logging.LogRecord:
+    return logging.LogRecord(
+        name="pyflow.tests.blank-rich-log",
+        level=logging.WARNING,
+        pathname=__file__,
+        lineno=0,
+        msg=message,
+        args=(),
+        exc_info=None,
+    )
