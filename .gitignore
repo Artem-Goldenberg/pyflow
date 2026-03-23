@@ -16,6 +16,7 @@ secrets
 
 examples
 *-generated/
+_generated
 PLAN.md
 prompt
 trash.py
