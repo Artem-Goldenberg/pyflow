@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import re
+import socket
 import sys
 from email.message import Message
 from pathlib import Path
@@ -326,6 +327,38 @@ def test_discover_provider_models_surfaces_http_error_body(
             base_url="https://provider.example/v1",
             api_key="test-token",
         )
+
+
+def test_discover_provider_models_surfaces_host_resolution_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_urlopen(
+        http_request: request.Request,
+        timeout: float,
+    ) -> _FakeHTTPResponse:
+        raise error.URLError(
+            socket.gaierror(8, "nodename nor servname provided, or not known")
+        )
+
+    monkeypatch.setattr(model_generator.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"Could not resolve host 'provider\.example' from "
+        r"base_url='https://provider\.example/v1'",
+    ):
+        model_generator.discover_provider_models(
+            base_url="https://provider.example/v1",
+            api_key="test-token",
+        )
+
+
+def test_discover_provider_models_rejects_non_absolute_base_urls() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"Invalid provider base_url 'provider\.example/v1'",
+    ):
+        model_generator.discover_provider_models(base_url="provider.example/v1")
 
 
 def _extract_provider_block(*, content: str, provider_name: str) -> str:

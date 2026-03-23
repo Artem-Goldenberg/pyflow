@@ -20,11 +20,12 @@ import json
 import keyword
 import os
 import re
+import socket
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
-from urllib import error, request
+from urllib import error, parse, request
 
 from pydantic import SecretStr
 
@@ -297,6 +298,7 @@ def _request_models_payload(
     api_key: str | None,
     timeout_seconds: float,
 ) -> object:
+    _validate_base_url(base_url)
     endpoint = _join_url(base_url.rstrip("/"), models_path)
     headers = {
         "Accept": "application/json",
@@ -317,11 +319,62 @@ def _request_models_payload(
         raise RuntimeError(
             f"Provider model discovery request failed for {endpoint}.\n{message}"
         ) from exc
+    except error.URLError as exc:
+        raise RuntimeError(
+            _format_discovery_url_error(
+                base_url=base_url,
+                endpoint=endpoint,
+                exc=exc,
+            )
+        ) from exc
     return json.loads(raw_payload.decode("utf-8"))
 
 
 def _join_url(base_url: str, path: str) -> str:
     return f"{base_url}/{path.lstrip('/')}"
+
+
+def _validate_base_url(base_url: str) -> None:
+    parsed_url = parse.urlsplit(base_url)
+    if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+        raise ValueError(
+            "Invalid provider base_url "
+            f"{base_url!r}. Expected an absolute http(s) URL such as "
+            "'https://api.openai.com/v1'."
+        )
+
+
+def _format_discovery_url_error(
+    *,
+    base_url: str,
+    endpoint: str,
+    exc: error.URLError,
+) -> str:
+    reason_text = _format_url_error_reason(exc.reason)
+    if _is_host_resolution_error(exc.reason):
+        parsed_url = parse.urlsplit(base_url)
+        host = parsed_url.hostname or parsed_url.netloc
+        return (
+            f"Provider model discovery request failed for {endpoint}.\n"
+            f"Could not resolve host {host!r} from base_url={base_url!r}. "
+            "This usually means the provider hostname in base_url is wrong.\n"
+            f"Original error: {reason_text}"
+        )
+    return (
+        f"Provider model discovery request failed for {endpoint}.\n"
+        f"Network error while connecting to base_url={base_url!r}.\n"
+        f"Original error: {reason_text}"
+    )
+
+
+def _format_url_error_reason(reason: object) -> str:
+    if isinstance(reason, BaseException):
+        return str(reason) or reason.__class__.__name__
+    return str(reason)
+
+
+def _is_host_resolution_error(reason: object) -> bool:
+    return isinstance(reason, socket.gaierror)
 
 
 def _resolve_optional_api_key(
