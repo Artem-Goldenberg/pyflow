@@ -39,6 +39,16 @@ Responsible for owning and constructing runtime LLM wrappers:
 - `TestModel` wrapper around one live `TestLLM` plus a pyflow-owned scripted-response record
 - Non-public fresh-runtime cloning hook for isolated worker execution (`_fresh_runtime_model()`)
 
+### 3.1 Generated Model Registry (`pyflow.models`)
+
+Responsible for exposing provider-discovered models as Python attributes:
+
+- `generate_models_from_provider(...)` calls a provider `/models` endpoint, then writes a generated `models` registry module
+- The generated `models` registry nests provider namespaces directly inside `models` and also exposes a flat top-level view (`models.<provider>_<alias>`)
+- Every generated model property access constructs a fresh `Model`; generated properties do not cache model instances
+- `api_key` passed to generation is used only for the discovery request and is not embedded into the generated module
+- Runtime model access always resolves credentials from `api_key_env_var` when the property is read
+
 ### 4. Agent Layer
 
 Responsible for executable user-facing object:

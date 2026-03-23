@@ -1,3 +1,17 @@
+"""Generate a typed `models` registry from provider `/models` discovery.
+
+The generation flow is intentionally split into two phases:
+
+1. Discover raw model IDs from a provider endpoint.
+2. Emit a readable Python registry with provider namespaces nested directly
+   inside `models` plus a flat top-level view (`models.<provider>_<alias>`).
+
+The `api_key` argument is used only for the discovery HTTP request. Generated
+model access does not serialize that key into the output module; runtime access
+always resolves credentials from `api_key_env_var` when a model property is
+read.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -15,7 +29,7 @@ from urllib import error, request
 from pydantic import SecretStr
 
 
-DEFAULT_GENERATED_MODELS_PATH = Path("pyflow/_generated/models.py")
+DEFAULT_GENERATED_MODELS_PATH = Path("_generated/models.py")
 DEFAULT_API_KEY_ENV_VAR = "API_KEY"
 DEFAULT_HTTP_USER_AGENT = "pyflow/0.1"
 
@@ -34,6 +48,12 @@ class _ModelEntry:
 
 
 @dataclass(frozen=True, kw_only=True)
+class _FlatModelEntry:
+    model_id: str
+    property_name: str
+
+
+@dataclass(frozen=True, kw_only=True)
 class _ProviderSpec:
     provider_name: str
     base_url: str
@@ -43,7 +63,7 @@ class _ProviderSpec:
 
 def generate_models_from_provider(
     *,
-    provider_name: str,
+    provider: str,
     base_url: str,
     output_path: str | Path = DEFAULT_GENERATED_MODELS_PATH,
     api_key: str | SecretStr | None = None,
@@ -52,14 +72,15 @@ def generate_models_from_provider(
     timeout_seconds: float = 30.0,
 ) -> Path:
     """
-    Discover provider models and upsert them into a generated module.
+    Discover provider models and write a generated `models` registry.
 
     Args:
-        provider_name: Short provider alias used under ``Models.<provider_name>``.
+        provider_name: Short provider alias used under ``models.<provider_name>``.
         base_url: Provider base URL used for both discovery and runtime model construction.
         output_path: Importable module path that stores generated model bindings.
-        api_key: Optional API key used for discovery.
-        api_key_env_var: Environment variable fallback for discovery and runtime.
+        api_key: Optional API key used only for the discovery request.
+        api_key_env_var: Environment variable read each time a generated model
+            property is accessed at runtime.
         models_path: Relative endpoint to discover models from (default ``/models``).
         timeout_seconds: HTTP timeout for discovery request.
 
@@ -74,7 +95,7 @@ def generate_models_from_provider(
         timeout_seconds=timeout_seconds,
     )
     return generate_models_file(
-        provider_name=provider_name,
+        provider_name=provider,
         base_url=base_url,
         model_ids=model_ids,
         output_path=output_path,
@@ -95,8 +116,9 @@ def discover_provider_models(
 
     Args:
         base_url: Provider base URL.
-        api_key: API key used as ``Authorization: Bearer <key>`` when provided.
-        api_key_env_var: Environment variable fallback for API key.
+        api_key: API key used only for the discovery request as
+            ``Authorization: Bearer <key>`` when provided.
+        api_key_env_var: Environment variable fallback for the discovery request.
         models_path: Relative endpoint path for model listing.
         timeout_seconds: HTTP timeout for the discovery request.
 
@@ -176,8 +198,12 @@ def generate_models_file(
     """
     Upsert generated provider models into a Python module.
 
-    The output module always contains a ``Models`` class and preserves generated
-    blocks for providers other than ``provider_name``.
+    The generated module exposes provider namespaces nested directly inside
+    ``models`` plus a flat top-level view (``models.<provider>_<alias>``).
+    Each model access returns a fresh ``Model`` instance and resolves its API
+    key from ``api_key_env_var`` at access time.
+
+    Generated blocks for providers other than ``provider_name`` are preserved.
     """
     provider_alias = _validate_provider_name(provider_name)
     output = Path(output_path)
@@ -199,13 +225,13 @@ def generate_models_file(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Generate explicit lazy pyflow model bindings from a provider /models endpoint."
+            "Generate explicit pyflow model bindings from a provider /models endpoint."
         )
     )
     parser.add_argument(
         "provider",
         help=(
-            "Short Python identifier used under Models.<provider>. "
+            "Short Python identifier used under models.<provider>. "
             "Keep this short because generated aliases include it."
         ),
     )
@@ -218,14 +244,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--api-key",
         default=None,
         help=(
-            "API key used to call /models. If omitted, the value from --api-key-env-var "
-            "is used when present."
+            "API key used only to call /models during generation. If omitted, "
+            "the value from --api-key-env-var is used when present."
         ),
     )
     parser.add_argument(
         "--api-key-env-var",
         default=DEFAULT_API_KEY_ENV_VAR,
-        help="Environment variable fallback for API key (default: API_KEY).",
+        help=(
+            "Environment variable used for discovery fallback and for runtime "
+            "model access in the generated module (default: API_KEY)."
+        ),
     )
     parser.add_argument(
         "--models-path",
@@ -246,7 +275,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     generated_path = generate_models_from_provider(
-        provider_name=args.provider,
+        provider=args.provider,
         base_url=args.base_url,
         output_path=args.output,
         api_key=args.api_key,
@@ -328,16 +357,8 @@ def _render_support_block() -> str:
     return "\n".join(
         [
             _SUPPORT_BLOCK_START,
-            "from __future__ import annotations",
-            "",
-            "import os",
-            "",
-            "from pydantic import SecretStr",
-            "",
-            "from pyflow.model import Model",
-            "",
-            "",
             "def _create_model(*, model_id: str, base_url: str, api_key_env_var: str) -> Model:",
+            '    """Create a fresh runtime model for one registry access."""',
             "    resolved_key = _resolve_api_key(",
             "        api_key=None,",
             "        api_key_env_var=api_key_env_var,",
@@ -372,21 +393,53 @@ def _render_support_block() -> str:
 
 def _render_models_module(provider_specs: Sequence[_ProviderSpec]) -> str:
     lines = [
-        _render_support_block(),
+        "from __future__ import annotations",
+        "",
+        "import os",
+        "",
+        "from pydantic import SecretStr",
+        "",
+        "from pyflow.model import Model",
         "",
         "",
         "class Models:",
-        "    \"\"\"Generated provider model registry. Regenerate with pyflow.model_generator.\"\"\"",
+        '    """Generated model registry accessed through the `models` instance.',
+        "",
+        "    `models.<provider>` exposes nested provider namespaces and",
+        "    `models.<provider>_<alias>` exposes the same models as a flat list.",
+        "    Each model access builds a fresh",
+        "    `Model` and resolves its API key from `api_key_env_var` at access time.",
+        '    """',
     ]
 
     if not provider_specs:
         lines.append("    pass")
+        lines.extend(
+            (
+                "",
+                "",
+                "models = Models()",
+                "",
+                "",
+                _render_support_block(),
+            )
+        )
         return "\n".join(lines).rstrip()
 
     for provider_spec in provider_specs:
         lines.append("")
         lines.extend(_render_provider_block(provider_spec))
 
+    lines.extend(
+        (
+            "",
+            "",
+            "models = Models()",
+            "",
+            "",
+            _render_support_block(),
+        )
+    )
     return "\n".join(lines).rstrip()
 
 
@@ -395,42 +448,44 @@ def _render_provider_block(provider_spec: _ProviderSpec) -> Sequence[str]:
         provider_name=provider_spec.provider_name,
         model_ids=provider_spec.model_ids,
     )
-    provider_class_name = f"_{_pascal_case(provider_spec.provider_name)}ProviderModels"
+    flat_entries = _build_flat_model_entries(
+        provider_name=provider_spec.provider_name,
+        entries=entries,
+    )
     grouped_entries = _group_entries_by_provider_alias(entries)
-    helper_blocks: list[str] = []
-
-    for provider_alias, family_entries in grouped_entries.items():
-        if not _is_family_group(family_entries):
-            continue
-        helper_blocks.extend(
-            _render_family_class_block(
-                provider_name=provider_spec.provider_name,
-                family_alias=provider_alias,
-                entries=family_entries,
-                base_url=provider_spec.base_url,
-                api_key_env_var=provider_spec.api_key_env_var,
-            )
-        )
-        helper_blocks.append("")
-
-    helper_blocks.extend(
+    lines = [
+        f"    {_provider_block_start(provider_spec.provider_name)}",
+        f"    {_render_provider_spec_comment(provider_spec)}",
+    ]
+    lines.extend(
         _render_provider_class_block(
-            provider_name=provider_spec.provider_name,
-            provider_class_name=provider_class_name,
+            provider_class_name=provider_spec.provider_name,
             grouped_entries=grouped_entries,
             base_url=provider_spec.base_url,
             api_key_env_var=provider_spec.api_key_env_var,
+            indent="    ",
         )
     )
-
-    metadata_comment = _render_provider_spec_comment(provider_spec)
-    return (
-        f"    {_provider_block_start(provider_spec.provider_name)}",
-        f"    {metadata_comment}",
-        *helper_blocks,
-        f"    {provider_spec.provider_name}: {provider_class_name} = {provider_class_name}()",
-        f"    {_provider_block_end(provider_spec.provider_name)}",
+    lines.append(
+        "    "
+        f"{provider_spec.provider_name} = {provider_spec.provider_name}()"
+        "  # pyright: ignore[reportAssignmentType]"
     )
+
+    for flat_entry in flat_entries:
+        lines.append("")
+        lines.extend(
+            _render_model_property_block(
+                property_name=flat_entry.property_name,
+                model_id=flat_entry.model_id,
+                base_url=provider_spec.base_url,
+                api_key_env_var=provider_spec.api_key_env_var,
+                indent="    ",
+            )
+        )
+
+    lines.append(f"    {_provider_block_end(provider_spec.provider_name)}")
+    return tuple(lines)
 
 
 def _build_model_entries(
@@ -523,11 +578,7 @@ def _classify_model_id(*, provider_name: str, model_id: str) -> tuple[str, str |
 
 
 def _normalize_family_alias(token: str) -> str:
-    lowered = token.strip().lower()
-    match = re.fullmatch(r"([a-z]+)\d+", lowered)
-    if match is not None:
-        lowered = match.group(1)
-    return _sanitize_identifier(lowered)
+    return _sanitize_identifier(token)
 
 
 def _alias_from_tokens(tokens: Sequence[str]) -> str:
@@ -597,20 +648,43 @@ def _group_entries_by_provider_alias(
     return grouped
 
 
+def _build_flat_model_entries(
+    *,
+    provider_name: str,
+    entries: Sequence[_ModelEntry],
+) -> Sequence[_FlatModelEntry]:
+    used_aliases: set[str] = set()
+    flat_entries: list[_FlatModelEntry] = []
+
+    for entry in entries:
+        alias_parts = [provider_name, entry.provider_alias]
+        if entry.model_alias is not None:
+            alias_parts.append(entry.model_alias)
+        property_name = _unique_alias("_".join(alias_parts), used_aliases)
+        used_aliases.add(property_name)
+        flat_entries.append(
+            _FlatModelEntry(
+                model_id=entry.model_id,
+                property_name=property_name,
+            )
+        )
+
+    return tuple(flat_entries)
+
+
 def _is_family_group(entries: Sequence[_ModelEntry]) -> bool:
     return any(entry.model_alias is not None for entry in entries)
 
 
 def _render_family_class_block(
     *,
-    provider_name: str,
     family_alias: str,
     entries: Sequence[_ModelEntry],
     base_url: str,
     api_key_env_var: str,
+    indent: str,
 ) -> Sequence[str]:
-    class_name = _family_class_name(provider_name=provider_name, family_alias=family_alias)
-    lines = [f"    class {class_name}:"]
+    lines = [f"{indent}class {family_alias}:"]
     body: list[str] = []
 
     for index, entry in enumerate(entries):
@@ -621,47 +695,47 @@ def _render_family_class_block(
         body.extend(
             _render_model_property_block(
                 property_name=entry.model_alias,
-                cache_name=f"_{entry.model_alias}",
                 model_id=entry.model_id,
                 base_url=base_url,
                 api_key_env_var=api_key_env_var,
-                indent="        ",
+                indent=f"{indent}    ",
             )
         )
 
     if not body:
-        body.append("        pass")
+        body.append(f"{indent}    pass")
 
-    return (*lines, *body)
+    return (
+        *lines,
+        *body,
+        f"{indent}{family_alias} = {family_alias}()"
+        "  # pyright: ignore[reportAssignmentType]",
+    )
 
 
 def _render_provider_class_block(
     *,
-    provider_name: str,
     provider_class_name: str,
     grouped_entries: dict[str, list[_ModelEntry]],
     base_url: str,
     api_key_env_var: str,
+    indent: str,
 ) -> Sequence[str]:
-    lines = [f"    class {provider_class_name}:"]
+    lines = [f"{indent}class {provider_class_name}:"]
     body: list[str] = []
 
-    for provider_alias in sorted(grouped_entries):
-        entries = grouped_entries[provider_alias]
+    for provider_alias, entries in grouped_entries.items():
         if body:
             body.append("")
 
         if _is_family_group(entries):
-            family_class_name = _family_class_name(
-                provider_name=provider_name,
-                family_alias=provider_alias,
-            )
             body.extend(
-                _render_namespace_property_block(
-                    property_name=provider_alias,
-                    cache_name=f"_{provider_alias}",
-                    namespace_class_name=family_class_name,
-                    indent="        ",
+                _render_family_class_block(
+                    family_alias=provider_alias,
+                    entries=entries,
+                    base_url=base_url,
+                    api_key_env_var=api_key_env_var,
+                    indent=f"{indent}    ",
                 )
             )
             continue
@@ -670,68 +744,36 @@ def _render_provider_class_block(
         body.extend(
             _render_model_property_block(
                 property_name=entry.provider_alias,
-                cache_name=f"_{entry.provider_alias}",
                 model_id=entry.model_id,
                 base_url=base_url,
                 api_key_env_var=api_key_env_var,
-                indent="        ",
+                indent=f"{indent}    ",
             )
         )
 
     if not body:
-        body.append("        pass")
+        body.append(f"{indent}    pass")
 
     return (*lines, *body)
-
-
-def _render_namespace_property_block(
-    *,
-    property_name: str,
-    cache_name: str,
-    namespace_class_name: str,
-    indent: str,
-) -> Sequence[str]:
-    return (
-        f"{indent}{cache_name}: Models.{namespace_class_name} | None = None",
-        "",
-        f"{indent}@property",
-        f"{indent}def {property_name}(self) -> Models.{namespace_class_name}:",
-        f"{indent}    if self.{cache_name} is None:",
-        f"{indent}        self.{cache_name} = Models.{namespace_class_name}()",
-        f"{indent}    return self.{cache_name}",
-    )
 
 
 def _render_model_property_block(
     *,
     property_name: str,
-    cache_name: str,
     model_id: str,
     base_url: str,
     api_key_env_var: str,
     indent: str,
 ) -> Sequence[str]:
     return (
-        f"{indent}{cache_name}: Model | None = None",
-        "",
         f"{indent}@property",
         f"{indent}def {property_name}(self) -> Model:",
-        f"{indent}    if self.{cache_name} is None:",
-        f"{indent}        self.{cache_name} = _create_model(",
-        f"{indent}            model_id={model_id!r},",
-        f"{indent}            base_url={base_url!r},",
-        f"{indent}            api_key_env_var={api_key_env_var!r},",
-        f"{indent}        )",
-        f"{indent}    return self.{cache_name}",
+        f"{indent}    return _create_model(",
+        f"{indent}        model_id={model_id!r},",
+        f"{indent}        base_url={base_url!r},",
+        f"{indent}        api_key_env_var={api_key_env_var!r},",
+        f"{indent}    )",
     )
-
-
-def _family_class_name(*, provider_name: str, family_alias: str) -> str:
-    return f"_{_pascal_case(provider_name)}{_pascal_case(family_alias)}Models"
-
-
-def _pascal_case(value: str) -> str:
-    return "".join(part.capitalize() for part in value.split("_") if part) or "Value"
 
 
 def _render_provider_spec_comment(provider_spec: _ProviderSpec) -> str:
