@@ -6,8 +6,9 @@ from typing import Sequence, cast
 
 import ipywidgets as widgets
 import pytest
+from openhands.sdk import Message, TextContent
 from openhands.sdk.conversation.base import ConversationStateProtocol
-from openhands.sdk.llm import Message, MessageToolCall, TextContent
+from openhands.sdk.llm import MessageToolCall
 
 from pyflow import Agent, Model, Session, TestModel, tool
 from pyflow.notebook_visualizer import (

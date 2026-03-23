@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Callable, Literal, Protocol, Sequence, cast
 
 import ipywidgets as widgets
 from IPython.display import display, display_markdown
+from openhands.sdk import Event, TextContent
 from openhands.sdk.conversation.visualizer.base import ConversationVisualizerBase
 from openhands.sdk.event import (
     ACPToolCallEvent,
@@ -19,12 +20,12 @@ from openhands.sdk.event import (
     PauseEvent,
     UserRejectObservation,
 )
-from openhands.sdk.event.base import Event
-from openhands.sdk.llm import TextContent, content_to_str
+from openhands.sdk.llm import content_to_str
 from openhands.sdk.security import risk
 
 if TYPE_CHECKING:
-    from openhands.sdk.conversation.base import BaseConversation, ConversationStateProtocol
+    from openhands.sdk.conversation.base import ConversationStateProtocol
+    from openhands.sdk import BaseConversation
     from pyflow.session import Session
 
 

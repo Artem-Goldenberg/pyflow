@@ -2,7 +2,8 @@
 # %%
 import logging
 
-from openhands.sdk.llm import Message, MessageToolCall, TextContent
+from openhands.sdk import Message, TextContent
+from openhands.sdk.llm import MessageToolCall
 
 from pyflow import Agent, Model
 

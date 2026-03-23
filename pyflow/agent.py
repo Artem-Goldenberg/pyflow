@@ -5,9 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, cast, Sequence
 
-from openhands.sdk import Agent as OpenHandsAgent
-from openhands.sdk import Conversation
-from openhands.sdk.conversation.base import BaseConversation
+from openhands.sdk import Agent as OpenHandsAgent, BaseConversation, Conversation
 
 from pyflow.context import Context
 from pyflow.display import (

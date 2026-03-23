@@ -45,6 +45,8 @@ packages = ["pyflow"]
 include = ["pyflow", "tests"]
 exclude = [
     ".venv",
+    "aux",
+    "test.py",
     "examples",
     "pyflow-generated",
     "tests-generated",

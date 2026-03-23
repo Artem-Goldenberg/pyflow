@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from html import escape
 from typing import Literal, Sequence
 
+from openhands.sdk import Event, TextContent
 from openhands.sdk.event import (
     ACPToolCallEvent,
     ActionEvent,
@@ -16,8 +17,7 @@ from openhands.sdk.event import (
     PauseEvent,
     UserRejectObservation,
 )
-from openhands.sdk.event.base import Event
-from openhands.sdk.llm import TextContent, content_to_str
+from openhands.sdk.llm import content_to_str
 from rich import box
 from rich.align import Align
 from rich.console import Console, ConsoleOptions, Group, RenderResult, RenderableType

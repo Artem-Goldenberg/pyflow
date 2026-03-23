@@ -9,12 +9,12 @@ from typing import Annotated, Any, cast
 import pytest
 from pydantic import BaseModel
 
-from openhands.sdk import Observation
+from openhands.sdk import Observation, ToolDefinition as OpenHandsToolDefinition
 from openhands.sdk.event import ActionEvent, ObservationEvent
-from openhands.sdk.llm import Message, MessageToolCall, TextContent
+from openhands.sdk import Message, TextContent
+from openhands.sdk.llm import MessageToolCall
 from openhands.sdk.tool import (
     ToolAnnotations,
-    ToolDefinition as OpenHandsToolDefinition,
     resolve_tool,
 )
 from openhands.tools.apply_patch.definition import ApplyPatchAction, ApplyPatchObservation

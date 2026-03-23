@@ -4,8 +4,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Self, Sequence
 
-from openhands.sdk import LLM
-from openhands.sdk.llm import Message
+from openhands.sdk import LLM, Message
 from openhands.sdk.llm.auth import SupportedVendor
 from openhands.sdk.testing import TestLLM
 from pydantic import SecretStr

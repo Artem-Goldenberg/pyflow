@@ -6,9 +6,8 @@ from dataclasses import dataclass, field
 from typing import cast, Sequence
 
 import pytest
-from openhands.sdk import LLM
-from openhands.sdk.conversation.base import BaseConversation
-from openhands.sdk.llm import Message, MessageToolCall, TextContent
+from openhands.sdk import BaseConversation, LLM, Message, TextContent
+from openhands.sdk.llm import MessageToolCall
 from pydantic import SecretStr
 
 from pyflow import AIModel, Agent, Model, ParallelFailure, Request, Session, TestModel

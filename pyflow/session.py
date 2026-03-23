@@ -3,8 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Sequence
 
-from openhands.sdk.conversation.base import BaseConversation
-from openhands.sdk.event.base import Event
+from openhands.sdk import BaseConversation, Event
 from rich.console import Console, ConsoleOptions, RenderResult
 
 from pyflow.display import (

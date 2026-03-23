@@ -6,9 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence, cast
 
-from openhands.sdk import LLM
-from openhands.sdk.conversation.base import BaseConversation
-from openhands.sdk.llm import Message, MessageToolCall, TextContent
+from openhands.sdk import BaseConversation, LLM, Message, TextContent
+from openhands.sdk.llm import MessageToolCall
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.testing import TestLLMExhaustedError
 from pydantic import SecretStr

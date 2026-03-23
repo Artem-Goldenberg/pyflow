@@ -20,14 +20,16 @@ from typing import (
     overload,
 )
 
-from openhands.sdk.conversation.base import BaseConversation
-from openhands.sdk.llm import TextContent
-from openhands.sdk.tool import (
+from openhands.sdk import (
     Action,
+    BaseConversation,
     Observation,
+    TextContent,
     Tool as OpenHandsToolSpec,
-    ToolAnnotations,
     ToolDefinition as OpenHandsToolDefinition,
+)
+from openhands.sdk.tool import (
+    ToolAnnotations,
     ToolExecutor,
     list_registered_tools,
     register_tool,
