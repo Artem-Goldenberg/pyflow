@@ -272,10 +272,13 @@ class GitRepo:
             raise ValueError(f"Invalid branch name: {branch_name}") from exc
 
     def _require_worktree(self, path: Path) -> WorktreeInfo:
+        normalized_path = _normalize_path(path)
         for worktree in self.list_worktrees():
-            if worktree.path == path:
+            if _normalize_path(worktree.path) == normalized_path:
                 return worktree
-        raise RuntimeError(f"Git created worktree at {path}, but it was not listed.")
+        raise RuntimeError(
+            f"Git created worktree at {normalized_path}, but it was not listed."
+        )
 
     def _resolve_target(self, target: WorktreeInput | None) -> Path:
         if target is None:
@@ -389,7 +392,7 @@ def _parse_worktree_block(
 
     for line in block:
         if line.startswith("worktree "):
-            path = Path(line.removeprefix("worktree "))
+            path = _normalize_path(Path(line.removeprefix("worktree ")))
             continue
         if line.startswith("HEAD "):
             head_oid = line.removeprefix("HEAD ")
@@ -652,9 +655,13 @@ def _rev_parse_optional(cwd: Path, ref: str) -> str | None:
 
 def _resolve_worktrees_root(repo_root: Path, worktrees_root: str | Path) -> Path:
     root = Path(worktrees_root).expanduser()
-    if root.is_absolute():
-        return root
-    return (repo_root / root).resolve()
+    if not root.is_absolute():
+        root = repo_root / root
+    return _normalize_path(root)
+
+
+def _normalize_path(path: Path) -> Path:
+    return path.expanduser().resolve()
 
 
 def _generate_branch_name(*, run_id: str, task_id: str) -> str:

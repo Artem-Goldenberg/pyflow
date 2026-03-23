@@ -55,6 +55,32 @@ def test_create_worktree_accepts_explicit_branch_name(tmp_path: Path) -> None:
     assert worktree.branch == "refs/heads/feature/agent-a"
 
 
+def test_create_worktree_resolves_symlinked_worktrees_root(tmp_path: Path) -> None:
+    repo_path = _init_repo(tmp_path)
+    repo = GitRepo.open(repo_path)
+
+    target_root = tmp_path / "trees-target"
+    target_root.mkdir()
+    symlink_root = tmp_path / "trees-link"
+    try:
+        symlink_root.symlink_to(target_root, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable in this environment: {exc}")
+
+    worktree = repo.create_worktree(
+        worktrees_root=symlink_root,
+        run_id="run",
+        task_id="through-link",
+    )
+
+    assert worktree.path == target_root / "run" / "through-link"
+    assert worktree.path.exists()
+    assert worktree.path.parent.parent == target_root
+
+    listed_paths = {item.path for item in repo.list_worktrees()}
+    assert worktree.path in listed_paths
+
+
 def test_remove_worktree_deletes_linked_tree(tmp_path: Path) -> None:
     repo_path = _init_repo(tmp_path)
     repo = GitRepo.open(repo_path)
