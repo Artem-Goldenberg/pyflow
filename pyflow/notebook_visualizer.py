@@ -7,7 +7,7 @@ from html import escape
 from typing import TYPE_CHECKING, Callable, Literal, Protocol, Sequence, cast
 
 import ipywidgets as widgets
-from IPython.display import DisplayHandle, Markdown, display, display_markdown
+from IPython.display import display, display_markdown
 from openhands.sdk.conversation.visualizer.base import ConversationVisualizerBase
 from openhands.sdk.event import (
     ACPToolCallEvent,
@@ -106,7 +106,9 @@ class NotebookConversationVisualizer(ConversationVisualizerBase):
     def on_event(self, event: Event) -> None:
         self._seed_events_from_state()
         self._events.append(event)
-        self.refresh()
+        # Notebook frontends like VS Code can surface repeated display updates
+        # during a running cell as empty output blocks. Buffer event changes and
+        # render once at explicit sync points instead.
 
     def refresh(self) -> None:
         model = build_notebook_conversation_model(
@@ -318,20 +320,20 @@ class NotebookSessionWidget:
 
 
 class _IPythonNotebookTarget:
-    _transcript_handle: DisplayHandle | None
+    _transcript_widget: NotebookSessionWidget | None
     _controls_displayed: bool
 
     def __init__(self) -> None:
-        self._transcript_handle = None
+        self._transcript_widget = None
         self._controls_displayed = False
 
     def display_transcript(self, markdown: str) -> None:
-        if self._transcript_handle is None:
-            handle = DisplayHandle()
-            handle.display(Markdown(markdown))
-            self._transcript_handle = handle
+        if self._transcript_widget is None:
+            self._transcript_widget = NotebookSessionWidget()
+            self._transcript_widget.render(markdown)
+            display(self._transcript_widget.widget)
             return
-        self._transcript_handle.update(Markdown(markdown))
+        self._transcript_widget.render(markdown)
 
     def display_controls(self, widget: widgets.Widget) -> None:
         if self._controls_displayed:
