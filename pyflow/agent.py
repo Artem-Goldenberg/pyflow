@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,6 +41,34 @@ class Agent:
     contexts: Sequence[Context] = ()
     tools: Sequence[Tool] = field(default_factory=default_agent_tools)
     workspace: str | Path = field(default_factory=Path.cwd)
+
+    def replacing(
+        self,
+        *,
+        model: Model | None = None,
+        contexts: Sequence[Context] | None = None,
+        tools: Sequence[Tool] | None = None,
+        workspace: str | Path | None = None,
+    ) -> Agent:
+        """
+        Return a new agent with the provided attributes replaced.
+
+        Args:
+            model: Optional replacement model.
+            contexts: Optional replacement global contexts.
+            tools: Optional replacement default tools.
+            workspace: Optional replacement workspace path.
+
+        Returns:
+            New immutable agent value with the requested overrides.
+        """
+        return dataclasses.replace(
+            self,
+            model=self.model if model is None else model,
+            contexts=self.contexts if contexts is None else contexts,
+            tools=self.tools if tools is None else tools,
+            workspace=self.workspace if workspace is None else workspace,
+        )
 
     def run(self, request: Request) -> Session:
         """

@@ -94,6 +94,7 @@ from pyflow import Agent
 from pyflow.gittools import GitRepo
 
 repo = GitRepo.open(".")
+agent = Agent(model=model)
 
 task_a = repo.create_worktree(
     worktrees_root="../agent-worktrees",
@@ -106,8 +107,8 @@ task_b = repo.create_worktree(
     task_id="task-b",
 )
 
-agent_a = Agent(model=model, workspace=task_a.path)
-agent_b = Agent(model=model, workspace=task_b.path)
+agent_a = agent.replacing(workspace=task_a.path)
+agent_b = agent.replacing(workspace=task_b.path)
 
 merge_tree = repo.create_worktree(
     worktrees_root="../agent-worktrees",

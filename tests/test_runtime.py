@@ -86,6 +86,53 @@ def test_agent_run_async_returns_session() -> None:
     assert session.agent is agent
 
 
+def test_agent_replacing_overrides_selected_fields_only() -> None:
+    agent = Agent(
+        model=_test_model_with_finishes("run_one"),
+        contexts=(docs("plan.md"),),
+        tools=(),
+        workspace="workspace-a",
+    )
+
+    replaced = agent.replacing(workspace="workspace-b")
+
+    assert replaced is not agent
+    assert replaced.model is agent.model
+    assert replaced.contexts == agent.contexts
+    assert replaced.tools == agent.tools
+    assert replaced.workspace == "workspace-b"
+    assert agent.workspace == "workspace-a"
+
+
+def test_agent_replacing_supports_multiple_overrides() -> None:
+    base_contexts = (docs("plan.md"),)
+    updated_contexts = (code("app.py"),)
+    base_model = _test_model_with_finishes("base")
+    updated_model = _test_model_with_finishes("updated")
+    agent = Agent(
+        model=base_model,
+        contexts=base_contexts,
+        tools=(),
+        workspace="workspace-a",
+    )
+
+    replaced = agent.replacing(
+        model=updated_model,
+        contexts=updated_contexts,
+        tools=(_session_render_sum_tool,),
+        workspace="workspace-b",
+    )
+
+    assert replaced.model is updated_model
+    assert replaced.contexts == updated_contexts
+    assert replaced.tools == (_session_render_sum_tool,)
+    assert replaced.workspace == "workspace-b"
+    assert agent.model is base_model
+    assert agent.contexts == base_contexts
+    assert agent.tools == ()
+    assert agent.workspace == "workspace-a"
+
+
 def test_step_rshift_agent_and_model_return_session() -> None:
     step = PromptStep(text="Fix the bug.")
 
