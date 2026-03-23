@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from html import escape
 from typing import TYPE_CHECKING, Callable, Literal, Protocol, Sequence, cast
 
 import ipywidgets as widgets
-from IPython.display import display, display_markdown
+from IPython.display import DisplayHandle, display, display_markdown
 from openhands.sdk import Event, TextContent
-from openhands.sdk.conversation.visualizer.base import ConversationVisualizerBase
+from openhands.sdk.conversation import ConversationVisualizerBase
 from openhands.sdk.event import (
     ACPToolCallEvent,
     ActionEvent,
@@ -18,6 +19,7 @@ from openhands.sdk.event import (
     MessageEvent,
     ObservationEvent,
     PauseEvent,
+    SystemPromptEvent,
     UserRejectObservation,
 )
 from openhands.sdk.llm import content_to_str
@@ -32,6 +34,11 @@ if TYPE_CHECKING:
 _TurnRole = Literal["user", "agent", "system"]
 _ToolStatus = Literal["pending", "completed", "error", "rejected"]
 _SectionKind = Literal["markdown", "code"]
+
+
+class _NotebookRenderView(StrEnum):
+    LIVE = "live"
+    FULL = "full"
 
 
 @dataclass(kw_only=True)
@@ -66,6 +73,8 @@ class NotebookConversationModel:
 
 
 class NotebookDisplayTarget(Protocol):
+    def begin_live_render(self) -> None: ...
+
     def display_transcript(self, markdown: str) -> None: ...
 
     def display_controls(self, widget: widgets.Widget) -> None: ...
@@ -80,7 +89,9 @@ class NotebookConversationVisualizer(ConversationVisualizerBase):
 
     _display_target: NotebookDisplayTarget
     _events: list[Event]
+    _live_render_started: bool
     _seeded_from_state: bool
+    _start_event_index: int
     _controls: NotebookLiveControls
 
     def __init__(
@@ -95,7 +106,9 @@ class NotebookConversationVisualizer(ConversationVisualizerBase):
         )
         self._controls = controls if controls is not None else NotebookLiveControls()
         self._events = []
+        self._live_render_started = False
         self._seeded_from_state = False
+        self._start_event_index = 0
 
     @property
     def widget(self) -> widgets.Widget:
@@ -104,25 +117,40 @@ class NotebookConversationVisualizer(ConversationVisualizerBase):
     def bind_session(self, session: Session) -> None:
         self._controls.bind_session(session)
 
+    def begin_session_render(self, *, start_event_index: int) -> None:
+        self._start_event_index = start_event_index
+        self._live_render_started = False
+
     def on_event(self, event: Event) -> None:
         self._seed_events_from_state()
         self._events.append(event)
-        # Notebook frontends like VS Code can surface repeated display updates
-        # during a running cell as empty output blocks. Buffer event changes and
-        # render once at explicit sync points instead.
+        model = build_notebook_conversation_model(
+            self._current_events()[self._start_event_index :],
+            execution_status=_execution_status(self._state),
+            view=_NotebookRenderView.LIVE,
+        )
+        if not model.turns and not self._controls.is_visible:
+            return
+        self._ensure_live_render_started()
+        self._render_model(model)
 
     def refresh(self) -> None:
         model = build_notebook_conversation_model(
-            self._current_events(),
+            self._current_events()[self._start_event_index :],
             execution_status=_execution_status(self._state),
+            view=_NotebookRenderView.LIVE,
         )
+        self._ensure_live_render_started()
         self._render_model(model)
 
-    def sync_session(self, session: Session) -> None:
+    def sync_session(self, session: Session, *, start_event_index: int = 0) -> None:
         self.bind_session(session)
+        self._start_event_index = start_event_index
+        self._ensure_live_render_started()
         model = build_notebook_conversation_model(
-            session.events,
+            session.events[start_event_index:],
             execution_status=session.execution_status,
+            view=_NotebookRenderView.LIVE,
         )
         self._render_model(model)
 
@@ -130,6 +158,12 @@ class NotebookConversationVisualizer(ConversationVisualizerBase):
         self._controls.update_status(model.execution_status)
         self._display_target.display_transcript(render_notebook_markdown(model))
         self._display_target.display_controls(self._controls.widget)
+
+    def _ensure_live_render_started(self) -> None:
+        if self._live_render_started:
+            return
+        self._display_target.begin_live_render()
+        self._live_render_started = True
 
     def _seed_events_from_state(self) -> None:
         if self._seeded_from_state or self._state is None:
@@ -147,9 +181,8 @@ class NotebookLiveControls:
     """Minimal live controls shown under the notebook transcript."""
 
     _session: Session | None
-    _composer: widgets.Text
-    _send_button: widgets.Button
     _approve_button: widgets.Button
+    _button_row: widgets.HBox
     _reject_button: widgets.Button
     _feedback: widgets.Label
     _status: str | None
@@ -158,45 +191,27 @@ class NotebookLiveControls:
     def __init__(self) -> None:
         self._session = None
         self._status = None
-        self._composer = widgets.Text(
-            placeholder="Continue the conversation…",
-            layout=widgets.Layout(width="100%"),
-        )
-        self._send_button = widgets.Button(
-            description="",
-            icon="arrow-up",
-            tooltip="Send",
-            layout=widgets.Layout(width="40px"),
-        )
         self._approve_button = widgets.Button(
-            description="",
+            description="Approve",
             icon="check",
             tooltip="Approve pending action",
-            layout=widgets.Layout(width="40px"),
+            button_style="success",
         )
         self._reject_button = widgets.Button(
-            description="",
+            description="Reject",
             icon="times",
             tooltip="Reject pending action",
-            layout=widgets.Layout(width="40px"),
+            button_style="danger",
         )
+        self._button_row = widgets.HBox([self._approve_button, self._reject_button])
         self._feedback = widgets.Label()
         self._widget = widgets.VBox(
             [
-                widgets.HBox(
-                    [
-                        self._composer,
-                        self._send_button,
-                        self._approve_button,
-                        self._reject_button,
-                    ],
-                    layout=widgets.Layout(width="100%", align_items="center"),
-                ),
+                self._button_row,
                 self._feedback,
             ]
         )
 
-        self._send_button.on_click(self._on_send)
         self._approve_button.on_click(self._on_approve)
         self._reject_button.on_click(self._on_reject)
         self._update_controls(None)
@@ -205,6 +220,10 @@ class NotebookLiveControls:
     def widget(self) -> widgets.Widget:
         return self._widget
 
+    @property
+    def is_visible(self) -> bool:
+        return self._widget.layout.display != "none"
+
     def bind_session(self, session: Session) -> None:
         self._session = session
         self._clear_feedback()
@@ -212,20 +231,6 @@ class NotebookLiveControls:
     def update_status(self, execution_status: str | None) -> None:
         self._status = execution_status
         self._update_controls(execution_status)
-
-    def _on_send(self, _: widgets.Button) -> None:
-        if self._session is None:
-            self._set_feedback("Session is not attached to this live view yet.")
-            return
-
-        prompt = self._composer.value.strip()
-        if not prompt:
-            self._set_feedback("Enter a message before sending.")
-            return
-
-        session = self._session
-        self._run_session_action(lambda: prompt >> session)
-        self._composer.value = ""
 
     def _on_approve(self, _: widgets.Button) -> None:
         if self._session is None:
@@ -240,14 +245,10 @@ class NotebookLiveControls:
             self._set_feedback("Session is not attached to this live view yet.")
             return
 
-        reason = "User rejected the action"
-        if self._composer.value.strip():
-            reason = self._composer.value.strip()
-
         session = self._session
-        self._run_session_action(lambda: session.reject_pending_actions(reason))
-        if self._composer.value.strip():
-            self._composer.value = ""
+        self._run_session_action(
+            lambda: session.reject_pending_actions("User rejected the action")
+        )
 
     def _run_session_action(self, action: Callable[[], object]) -> None:
         self._set_feedback("Running…")
@@ -262,31 +263,26 @@ class NotebookLiveControls:
             self._update_controls(self._status)
 
     def _set_busy(self, is_busy: bool) -> None:
-        self._composer.disabled = is_busy
-        self._send_button.disabled = is_busy
         self._approve_button.disabled = is_busy
         self._reject_button.disabled = is_busy
 
     def _update_controls(self, execution_status: str | None) -> None:
         normalized = _normalize_status_value(execution_status)
-        can_send = normalized not in {
-            "running",
-            "waiting_for_confirmation",
-            "paused",
-        }
-        self._composer.disabled = not can_send
-        self._send_button.disabled = not can_send
-        self._approve_button.disabled = normalized not in {
-            "waiting_for_confirmation",
-            "paused",
-        }
-        self._reject_button.disabled = normalized != "waiting_for_confirmation"
+        show_approval_controls = normalized == "waiting_for_confirmation"
+        self._button_row.layout.display = "" if show_approval_controls else "none"
+        self._approve_button.disabled = not show_approval_controls
+        self._reject_button.disabled = not show_approval_controls
+        self._widget.layout.display = (
+            "" if show_approval_controls or self._feedback.value else "none"
+        )
 
     def _set_feedback(self, message: str) -> None:
         self._feedback.value = message
+        self._widget.layout.display = "" if message else self._widget.layout.display
 
     def _clear_feedback(self) -> None:
         self._feedback.value = ""
+        self._update_controls(self._status)
 
 
 class NotebookSessionWidget:
@@ -321,22 +317,30 @@ class NotebookSessionWidget:
 
 
 class _IPythonNotebookTarget:
-    _transcript_widget: NotebookSessionWidget | None
+    _transcript_handle: DisplayHandle | None
     _controls_displayed: bool
 
     def __init__(self) -> None:
-        self._transcript_widget = None
+        self._transcript_handle = None
+        self._controls_displayed = False
+
+    def begin_live_render(self) -> None:
+        self._transcript_handle = None
         self._controls_displayed = False
 
     def display_transcript(self, markdown: str) -> None:
-        if self._transcript_widget is None:
-            self._transcript_widget = NotebookSessionWidget()
-            self._transcript_widget.render(markdown)
-            display(self._transcript_widget.widget)
+        payload = {"text/markdown": markdown}
+        if self._transcript_handle is None:
+            handle = display(payload, raw=True, display_id=True)
+            if isinstance(handle, DisplayHandle):
+                self._transcript_handle = handle
             return
-        self._transcript_widget.render(markdown)
+        self._transcript_handle.update(payload, raw=True)
 
     def display_controls(self, widget: widgets.Widget) -> None:
+        layout = getattr(widget, "layout", None)
+        if not self._controls_displayed and getattr(layout, "display", "") == "none":
+            return
         if self._controls_displayed:
             return
         display(widget)
@@ -347,18 +351,52 @@ def build_notebook_conversation_model(
     events: Sequence[Event],
     *,
     execution_status: str | None = None,
+    view: _NotebookRenderView = _NotebookRenderView.LIVE,
 ) -> NotebookConversationModel:
     turns: list[NotebookTurn] = []
     pending_tool_calls: dict[str, NotebookToolCall] = {}
     last_agent_turn: NotebookTurn | None = None
 
     for event in events:
+        if isinstance(event, SystemPromptEvent):
+            if view is _NotebookRenderView.FULL:
+                turn = NotebookTurn(role="system")
+                turn.sections.append(
+                    NotebookSection(
+                        title="System Prompt",
+                        content=event.system_prompt.text.strip(),
+                    )
+                )
+                if event.dynamic_context is not None and event.dynamic_context.text.strip():
+                    turn.sections.append(
+                        NotebookSection(
+                            title="Dynamic Context",
+                            content=event.dynamic_context.text.strip(),
+                        )
+                    )
+                tool_inventory = _tool_inventory_text(event.tools)
+                if tool_inventory:
+                    turn.sections.append(
+                        NotebookSection(title="Tools", content=tool_inventory)
+                    )
+                turns.append(turn)
+                last_agent_turn = None
+            continue
+
         if isinstance(event, MessageEvent):
             message_text = _message_event_text(event)
+            prompt_extension = _prompt_extension_text(event)
             if event.llm_message.role == "user":
                 turn = NotebookTurn(role="user")
                 if message_text:
                     turn.messages.append(message_text)
+                if view is _NotebookRenderView.FULL and prompt_extension:
+                    turn.sections.append(
+                        NotebookSection(
+                            title="Prompt Extension",
+                            content=prompt_extension,
+                        )
+                    )
                 turns.append(turn)
                 last_agent_turn = None
                 continue
@@ -372,6 +410,13 @@ def build_notebook_conversation_model(
                     turn.sections.append(
                         NotebookSection(title="Reasoning", content=reasoning)
                     )
+                if view is _NotebookRenderView.FULL and prompt_extension:
+                    turn.sections.append(
+                        NotebookSection(
+                            title="Prompt Extension",
+                            content=prompt_extension,
+                        )
+                    )
                 turns.append(turn)
                 last_agent_turn = turn
                 continue
@@ -379,7 +424,15 @@ def build_notebook_conversation_model(
             turn = NotebookTurn(role="system")
             if message_text:
                 turn.messages.append(message_text)
+            if view is _NotebookRenderView.FULL and prompt_extension:
+                turn.sections.append(
+                    NotebookSection(
+                        title="Prompt Extension",
+                        content=prompt_extension,
+                    )
+                )
             turns.append(turn)
+            last_agent_turn = None
             continue
 
         if isinstance(event, ActionEvent):
@@ -507,13 +560,14 @@ def build_notebook_conversation_model(
             if not event_text:
                 continue
             turns.append(NotebookTurn(role="system", messages=[event_text]))
+            last_agent_turn = None
 
     return NotebookConversationModel(turns=turns, execution_status=execution_status)
 
 
 def render_notebook_markdown(model: NotebookConversationModel) -> str:
     if not model.turns:
-        return "## pyflow session\n\n_Session has no recorded events._"
+        return "_Session has no recorded events._"
 
     tool_count = sum(len(turn.tool_calls) for turn in model.turns)
     summary = (
@@ -522,13 +576,7 @@ def render_notebook_markdown(model: NotebookConversationModel) -> str:
     )
     status = _format_status_label(_normalize_status_value(model.execution_status))
 
-    parts = [
-        "## pyflow session",
-        "",
-        f"Status: **{status}**",
-        "",
-        summary,
-    ]
+    parts = [f"Status: **{status}**", "", summary]
 
     banner = _banner_markdown(model)
     if banner:
@@ -550,18 +598,43 @@ def render_notebook_markdown(model: NotebookConversationModel) -> str:
     return "\n".join(parts).strip()
 
 
+def notebook_markdown_for_session_delta(
+    session: Session,
+    *,
+    start_event_index: int,
+) -> str:
+    return render_notebook_markdown(
+        build_notebook_conversation_model(
+            session.events[start_event_index:],
+            execution_status=session.execution_status,
+            view=_NotebookRenderView.LIVE,
+        )
+    )
+
+
 def notebook_markdown_for_session(session: Session) -> str:
     return render_notebook_markdown(
         build_notebook_conversation_model(
             session.events,
             execution_status=session.execution_status,
+            view=_NotebookRenderView.LIVE,
+        )
+    )
+
+
+def notebook_full_markdown_for_session(session: Session) -> str:
+    return render_notebook_markdown(
+        build_notebook_conversation_model(
+            session.events,
+            execution_status=session.execution_status,
+            view=_NotebookRenderView.FULL,
         )
     )
 
 
 def notebook_widget_for_session(session: Session) -> widgets.Widget:
     widget = _read_only_widget_for_session(session)
-    widget.render(notebook_markdown_for_session(session))
+    widget.render(notebook_full_markdown_for_session(session))
     return widget.widget
 
 
@@ -573,21 +646,25 @@ def notebook_mimebundle_for_session(
 ) -> dict[str, object]:
     del include, exclude
     widget = _read_only_widget_for_session(session)
-    markdown = notebook_markdown_for_session(session)
+    markdown = notebook_full_markdown_for_session(session)
     widget.render(markdown)
     return widget.mimebundle(
-        text_plain=session.render(),
+        text_plain=session.render_full(),
         text_markdown=markdown,
     )
 
 
-def sync_notebook_session(session: Session) -> None:
+def sync_notebook_session(
+    session: Session,
+    *,
+    start_event_index: int = 0,
+) -> None:
     visualizer = _conversation_visualizer(session.conversation)
     if isinstance(visualizer, NotebookConversationVisualizer):
-        visualizer.sync_session(session)
+        visualizer.sync_session(session, start_event_index=start_event_index)
 
     if session._notebook_widget is not None:
-        session._notebook_widget.render(notebook_markdown_for_session(session))
+        session._notebook_widget.render(notebook_full_markdown_for_session(session))
 
 
 def _read_only_widget_for_session(session: Session) -> NotebookSessionWidget:
@@ -673,7 +750,7 @@ def _banner_markdown(model: NotebookConversationModel) -> str:
         )
 
     if status == "paused":
-        return "### Paused\n\nResume from the live controls below."
+        return "### Paused\n\nResume with `session.conversation.run()`."
 
     if status in {"error", "stuck"}:
         label = _format_status_label(status)
@@ -713,6 +790,10 @@ def _details_block(summary: str, body: str) -> str:
 
 def _message_event_text(event: MessageEvent) -> str:
     return "".join(content_to_str(event.to_llm_message().content)).strip()
+
+
+def _prompt_extension_text(event: MessageEvent) -> str:
+    return _text_content_sequence_to_text(event.extended_content)
 
 
 def _message_reasoning_text(event: MessageEvent) -> str:
@@ -767,6 +848,20 @@ def _event_visual_text(event: Event) -> str:
     return event.visualize.plain.strip()
 
 
+def _tool_inventory_text(tools: Sequence[object]) -> str:
+    blocks: list[str] = []
+    for tool in tools:
+        name = str(getattr(tool, "name", type(tool).__name__))
+        description = str(getattr(tool, "description", "")).strip()
+        summary = description.splitlines()[0].strip() if description else ""
+        lines = [f"#### `{name}`", "", summary or "_No description provided._"]
+        arguments_schema = _tool_arguments_schema(tool)
+        if arguments_schema is not None:
+            lines.extend(["", "Arguments schema:", "", _code_fence(arguments_schema)])
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks).strip()
+
+
 def _stringify_value(value: object | None) -> str:
     if value is None:
         return ""
@@ -808,6 +903,13 @@ def _format_jsonish(content: str) -> str:
     except json.JSONDecodeError:
         return content
     return json.dumps(parsed, indent=2, sort_keys=True)
+
+
+def _tool_arguments_schema(tool: object) -> str | None:
+    action_type = getattr(tool, "action_type", None)
+    if action_type is None or not hasattr(action_type, "to_mcp_schema"):
+        return None
+    return json.dumps(action_type.to_mcp_schema(), indent=2, sort_keys=True)
 
 
 def _code_fence(content: str) -> str:

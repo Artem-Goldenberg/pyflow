@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from dataclasses import dataclass, field
-from html import escape
+from enum import StrEnum
 from typing import Literal, Sequence
 
 from openhands.sdk import Event, TextContent
@@ -15,6 +15,7 @@ from openhands.sdk.event import (
     MessageEvent,
     ObservationEvent,
     PauseEvent,
+    SystemPromptEvent,
     UserRejectObservation,
 )
 from openhands.sdk.llm import content_to_str
@@ -30,6 +31,19 @@ from pyflow.utils import indent_multiline
 
 _TurnRole = Literal["user", "agent", "system"]
 _ToolStatus = Literal["pending", "completed", "error", "rejected"]
+_SectionKind = Literal["text", "code"]
+
+
+class _SessionRenderView(StrEnum):
+    LIVE = "live"
+    FULL = "full"
+
+
+@dataclass(kw_only=True)
+class _SessionSection:
+    title: str
+    content: str
+    kind: _SectionKind = "text"
 
 
 @dataclass(kw_only=True)
@@ -46,6 +60,7 @@ class SessionTurn:
     role: _TurnRole
     response_id: str | None = None
     messages: list[str] = field(default_factory=list)
+    sections: list[_SessionSection] = field(default_factory=list)
     tool_calls: list[SessionToolCall] = field(default_factory=list)
 
 
@@ -63,6 +78,14 @@ class SessionTranscript:
             lines.append(f"{_role_label(turn.role)}:")
             for message in turn.messages:
                 lines.extend(indent_multiline("  ", message))
+            for section in turn.sections:
+                lines.append(f"  {section.title}:")
+                lines.extend(
+                    indent_multiline(
+                        "    ",
+                        _render_text_block(section.content, kind=section.kind),
+                    )
+                )
             for tool_call in turn.tool_calls:
                 lines.append(f"  Tool Call: {tool_call.tool_name}")
                 if tool_call.arguments:
@@ -76,42 +99,6 @@ class SessionTranscript:
             lines.append("")
 
         return "\n".join(lines).rstrip()
-
-    def render_html(self) -> str:
-        if not self.turns:
-            return (
-                f"{_session_html_style()}"
-                '<section class="pyflow-session">'
-                '<div class="pyflow-session__empty">Session has no recorded events.</div>'
-                "</section>"
-            )
-
-        tool_count = sum(len(turn.tool_calls) for turn in self.turns)
-        header_summary = (
-            f"{len(self.turns)} turn{'s' if len(self.turns) != 1 else ''}"
-            f" · {tool_count} tool call{'s' if tool_count != 1 else ''}"
-        )
-
-        parts = [_session_html_style(), '<section class="pyflow-session">']
-        parts.append('<div class="pyflow-session__header">')
-        parts.append('<div class="pyflow-session__title-group">')
-        parts.append('<div class="pyflow-session__eyebrow">pyflow session</div>')
-        parts.append('<div class="pyflow-session__title">Conversation Transcript</div>')
-        parts.append(
-            f'<div class="pyflow-session__summary">{escape(header_summary)}</div>'
-        )
-        parts.append("</div>")
-        if self.execution_status:
-            parts.append(_render_html_status_chip(self.execution_status))
-        parts.append("</div>")
-
-        status_banner = _render_html_status_banner(self)
-        if status_banner:
-            parts.append(status_banner)
-
-        parts.extend(_render_html_turn(turn) for turn in self.turns)
-        parts.append("</section>")
-        return "".join(parts)
 
     def display(self, console: Console | None = None) -> None:
         target = console if console is not None else Console()
@@ -152,18 +139,52 @@ def build_transcript(
     events: Sequence[Event],
     *,
     execution_status: str | None = None,
+    view: _SessionRenderView = _SessionRenderView.LIVE,
 ) -> SessionTranscript:
     turns: list[SessionTurn] = []
     pending_tool_calls: dict[str, SessionToolCall] = {}
     last_agent_turn: SessionTurn | None = None
 
     for event in events:
+        if isinstance(event, SystemPromptEvent):
+            if view is _SessionRenderView.FULL:
+                turn = SessionTurn(role="system")
+                turn.sections.append(
+                    _SessionSection(
+                        title="System Prompt",
+                        content=event.system_prompt.text.strip(),
+                    )
+                )
+                if event.dynamic_context is not None and event.dynamic_context.text.strip():
+                    turn.sections.append(
+                        _SessionSection(
+                            title="Dynamic Context",
+                            content=event.dynamic_context.text.strip(),
+                        )
+                    )
+                tool_inventory = _tool_inventory_text(event.tools)
+                if tool_inventory:
+                    turn.sections.append(
+                        _SessionSection(title="Tools", content=tool_inventory)
+                    )
+                turns.append(turn)
+                last_agent_turn = None
+            continue
+
         if isinstance(event, MessageEvent):
             message_text = _message_event_text(event)
+            prompt_extension = _prompt_extension_text(event)
             if event.llm_message.role == "user":
                 turn = SessionTurn(role="user")
                 if message_text:
                     turn.messages.append(message_text)
+                if view is _SessionRenderView.FULL and prompt_extension:
+                    turn.sections.append(
+                        _SessionSection(
+                            title="Prompt Extension",
+                            content=prompt_extension,
+                        )
+                    )
                 turns.append(turn)
                 last_agent_turn = None
                 continue
@@ -171,13 +192,29 @@ def build_transcript(
                 turn = SessionTurn(role="agent", response_id=event.llm_response_id)
                 if message_text:
                     turn.messages.append(message_text)
+                if view is _SessionRenderView.FULL and prompt_extension:
+                    turn.sections.append(
+                        _SessionSection(
+                            title="Prompt Extension",
+                            content=prompt_extension,
+                        )
+                    )
                 turns.append(turn)
                 last_agent_turn = turn
                 continue
+
+            turn = SessionTurn(role="system")
             if message_text:
-                turn = SessionTurn(role="system")
                 turn.messages.append(message_text)
-                turns.append(turn)
+            if view is _SessionRenderView.FULL and prompt_extension:
+                turn.sections.append(
+                    _SessionSection(
+                        title="Prompt Extension",
+                        content=prompt_extension,
+                    )
+                )
+            turns.append(turn)
+            last_agent_turn = None
             continue
 
         if isinstance(event, ActionEvent):
@@ -264,6 +301,7 @@ def build_transcript(
             turn = SessionTurn(role="system")
             turn.messages.append(event_text)
             turns.append(turn)
+            last_agent_turn = None
 
     return SessionTranscript(turns=turns, execution_status=execution_status)
 
@@ -317,6 +355,11 @@ def _render_turn_body(turn: SessionTurn) -> Group:
             parts.append(Text())
         parts.append(Text(message))
 
+    for section in turn.sections:
+        if parts:
+            parts.append(Text())
+        parts.append(_render_section(section))
+
     for tool_call in turn.tool_calls:
         if parts:
             parts.append(Text())
@@ -328,6 +371,13 @@ def _render_turn_body(turn: SessionTurn) -> Group:
     return Group(*parts)
 
 
+def _render_section(section: _SessionSection) -> Group:
+    return Group(
+        Text(section.title, style="dim"),
+        _render_code_block(section.content, kind=section.kind),
+    )
+
+
 def _render_tool_call(tool_call: SessionToolCall) -> Panel:
     content: list[RenderableType] = [
         Text(f"tool call: {tool_call.tool_name}", style="bold"),
@@ -335,11 +385,11 @@ def _render_tool_call(tool_call: SessionToolCall) -> Panel:
 
     if tool_call.arguments:
         content.append(Text("arguments", style="dim"))
-        content.append(_render_code_block(tool_call.arguments))
+        content.append(_render_code_block(tool_call.arguments, kind="code"))
 
     if tool_call.result:
         content.append(Text(_tool_status_label(tool_call.status).lower(), style="dim"))
-        content.append(_render_code_block(tool_call.result))
+        content.append(_render_code_block(tool_call.result, kind="code"))
 
     return Panel(
         Group(*content),
@@ -349,378 +399,44 @@ def _render_tool_call(tool_call: SessionToolCall) -> Panel:
     )
 
 
-def _render_code_block(content: str) -> RenderableType:
+def _render_code_block(content: str, *, kind: _SectionKind) -> RenderableType:
+    if kind == "code" and _looks_like_json(content):
+        return Syntax(_format_jsonish(content), "json", word_wrap=True)
+    if kind == "code":
+        return Text(content)
     if _looks_like_json(content):
         return Syntax(_format_jsonish(content), "json", word_wrap=True)
     return Text(content)
 
 
-def _render_html_turn(turn: SessionTurn) -> str:
-    role_class = f"pyflow-session__row--{turn.role}"
-    bubble_class = f"pyflow-session__bubble--{turn.role}"
-    parts = [f'<div class="pyflow-session__row {role_class}">']
-    parts.append(f'<article class="pyflow-session__bubble {bubble_class}">')
-    parts.append(
-        '<div class="pyflow-session__bubble-head">'
-        f'<span class="pyflow-session__role">{escape(_role_label(turn.role))}</span>'
-        "</div>"
-    )
-
-    for message in turn.messages:
-        parts.append(
-            '<div class="pyflow-session__message">'
-            f"{escape(message)}"
-            "</div>"
-        )
-
-    for tool_call in turn.tool_calls:
-        parts.append(_render_html_tool_call(tool_call))
-
-    if not turn.messages and not turn.tool_calls:
-        parts.append('<div class="pyflow-session__empty-turn">[empty]</div>')
-
-    parts.append("</article>")
-    parts.append("</div>")
-    return "".join(parts)
-
-
-def _render_html_tool_call(tool_call: SessionToolCall) -> str:
-    parts = ['<section class="pyflow-tool-call">']
-    parts.append('<div class="pyflow-tool-call__header">')
-    parts.append(
-        '<div class="pyflow-tool-call__title-group">'
-        '<div class="pyflow-tool-call__eyebrow">tool call</div>'
-        f'<div class="pyflow-tool-call__title">{escape(tool_call.tool_name)}</div>'
-        "</div>"
-    )
-    parts.append(_render_html_tool_status(tool_call.status))
-    parts.append("</div>")
-
-    if tool_call.arguments:
-        parts.append('<div class="pyflow-tool-call__section-label">Arguments</div>')
-        parts.append(_render_html_code_block(_format_jsonish(tool_call.arguments)))
-
-    if tool_call.result:
-        parts.append(
-            '<div class="pyflow-tool-call__section-label">'
-            f"{escape(_tool_status_label(tool_call.status))}"
-            "</div>"
-        )
-        parts.append(_render_html_code_block(tool_call.result))
-    elif tool_call.status == "pending":
-        parts.append(
-            '<div class="pyflow-tool-call__hint">'
-            "Awaiting approval or execution."
-            "</div>"
-        )
-
-    parts.append("</section>")
-    return "".join(parts)
-
-
-def _render_html_code_block(content: str) -> str:
-    return (
-        '<pre class="pyflow-tool-call__code"><code>'
-        f"{escape(content)}"
-        "</code></pre>"
-    )
-
-
-def _render_html_tool_status(status: _ToolStatus) -> str:
-    return (
-        '<span class="pyflow-tool-call__status '
-        f'pyflow-tool-call__status--{escape(status)}">'
-        f"{escape(_tool_status_label(status))}"
-        "</span>"
-    )
-
-
-def _render_html_status_chip(status: str) -> str:
-    normalized = _normalize_status_value(status)
-    return (
-        '<div class="pyflow-session__status '
-        f'pyflow-session__status--{escape(normalized)}">'
-        f"{escape(_format_status_label(normalized))}"
-        "</div>"
-    )
-
-
-def _render_html_status_banner(transcript: SessionTranscript) -> str:
-    pending_tool_names = [
-        tool_call.tool_name
-        for turn in transcript.turns
-        for tool_call in turn.tool_calls
-        if tool_call.status == "pending"
-    ]
-    status = _normalize_status_value(transcript.execution_status)
-
-    if status == "waiting_for_confirmation":
-        pending = ", ".join(dict.fromkeys(pending_tool_names)) or "pending tool action"
-        return (
-            '<aside class="pyflow-session__banner pyflow-session__banner--pending">'
-            '<div class="pyflow-session__banner-title">Approval required</div>'
-            f"<div>This session is waiting for confirmation for {escape(pending)}.</div>"
-            "<div>Continue with <code>session.approve_pending_actions()</code> "
-            "or reject with <code>session.reject_pending_actions()</code>.</div>"
-            "</aside>"
-        )
-
-    if status == "paused":
-        return (
-            '<aside class="pyflow-session__banner pyflow-session__banner--paused">'
-            '<div class="pyflow-session__banner-title">Paused</div>'
-            "<div>The conversation is paused and can be resumed with "
-            "<code>session.approve_pending_actions()</code> or "
-            "<code>session.conversation.run()</code>.</div>"
-            "</aside>"
-        )
-
-    if status in {"error", "stuck"}:
-        return (
-            '<aside class="pyflow-session__banner pyflow-session__banner--error">'
-            f'<div class="pyflow-session__banner-title">{escape(_format_status_label(status))}</div>'
-            "<div>The latest run did not complete cleanly. Review the tool output "
-            "and system events below.</div>"
-            "</aside>"
-        )
-
-    return ""
-
-
-def _session_html_style() -> str:
-    return """
-<style>
-.pyflow-session {
-  --pyflow-ink: #172033;
-  --pyflow-muted: #586377;
-  --pyflow-line: rgba(27, 39, 61, 0.12);
-  --pyflow-surface: rgba(255, 255, 255, 0.88);
-  --pyflow-surface-strong: rgba(255, 255, 255, 0.96);
-  --pyflow-user: linear-gradient(135deg, #d8f0ff 0%, #eef7ff 100%);
-  --pyflow-agent: linear-gradient(145deg, #fffdf8 0%, #ffffff 100%);
-  --pyflow-system: linear-gradient(145deg, #fff5df 0%, #fffdf8 100%);
-  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: var(--pyflow-ink);
-  background:
-    radial-gradient(circle at top left, rgba(73, 173, 255, 0.16), transparent 32%),
-    radial-gradient(circle at top right, rgba(255, 173, 96, 0.18), transparent 28%),
-    linear-gradient(180deg, #f5f8ff 0%, #fbfcff 100%);
-  border: 1px solid rgba(88, 99, 119, 0.16);
-  border-radius: 24px;
-  box-shadow: 0 18px 40px rgba(19, 34, 58, 0.08);
-  padding: 20px;
-}
-.pyflow-session__header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
-  flex-wrap: wrap;
-  margin-bottom: 18px;
-}
-.pyflow-session__eyebrow,
-.pyflow-tool-call__eyebrow {
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--pyflow-muted);
-  margin-bottom: 4px;
-}
-.pyflow-session__title {
-  font-size: 24px;
-  font-weight: 700;
-  line-height: 1.15;
-}
-.pyflow-session__summary {
-  color: var(--pyflow-muted);
-  font-size: 13px;
-  margin-top: 6px;
-}
-.pyflow-session__status {
-  border-radius: 999px;
-  padding: 7px 12px;
-  font-size: 12px;
-  font-weight: 700;
-  border: 1px solid transparent;
-  background: rgba(34, 197, 94, 0.12);
-  color: #166534;
-}
-.pyflow-session__status--waiting_for_confirmation {
-  background: rgba(245, 158, 11, 0.14);
-  color: #9a6700;
-}
-.pyflow-session__status--paused {
-  background: rgba(59, 130, 246, 0.12);
-  color: #1d4ed8;
-}
-.pyflow-session__status--error,
-.pyflow-session__status--stuck {
-  background: rgba(239, 68, 68, 0.12);
-  color: #b42318;
-}
-.pyflow-session__banner {
-  border-radius: 18px;
-  padding: 14px 16px;
-  margin-bottom: 18px;
-  border: 1px solid var(--pyflow-line);
-  background: rgba(255, 255, 255, 0.7);
-}
-.pyflow-session__banner-title {
-  font-size: 13px;
-  font-weight: 700;
-  margin-bottom: 6px;
-}
-.pyflow-session__banner--pending {
-  background: rgba(255, 244, 222, 0.85);
-  border-color: rgba(217, 119, 6, 0.18);
-}
-.pyflow-session__banner--paused {
-  background: rgba(224, 240, 255, 0.82);
-  border-color: rgba(37, 99, 235, 0.16);
-}
-.pyflow-session__banner--error {
-  background: rgba(255, 233, 233, 0.82);
-  border-color: rgba(220, 38, 38, 0.16);
-}
-.pyflow-session__row {
-  display: flex;
-  margin-top: 14px;
-}
-.pyflow-session__row--user {
-  justify-content: flex-end;
-}
-.pyflow-session__row--agent,
-.pyflow-session__row--system {
-  justify-content: flex-start;
-}
-.pyflow-session__bubble {
-  width: min(100%, 860px);
-  border-radius: 20px;
-  padding: 14px 16px;
-  border: 1px solid var(--pyflow-line);
-  box-shadow: 0 10px 24px rgba(19, 34, 58, 0.05);
-  background: var(--pyflow-surface);
-}
-.pyflow-session__row--user .pyflow-session__bubble {
-  max-width: 78%;
-}
-.pyflow-session__row--agent .pyflow-session__bubble,
-.pyflow-session__row--system .pyflow-session__bubble {
-  max-width: 88%;
-}
-.pyflow-session__bubble--user {
-  background: var(--pyflow-user);
-}
-.pyflow-session__bubble--agent {
-  background: var(--pyflow-agent);
-}
-.pyflow-session__bubble--system {
-  background: var(--pyflow-system);
-}
-.pyflow-session__bubble-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
-}
-.pyflow-session__role {
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--pyflow-muted);
-  font-weight: 700;
-}
-.pyflow-session__message {
-  white-space: pre-wrap;
-  line-height: 1.55;
-  margin-top: 10px;
-}
-.pyflow-session__message:first-of-type {
-  margin-top: 0;
-}
-.pyflow-tool-call {
-  margin-top: 14px;
-  border-radius: 16px;
-  padding: 14px;
-  border: 1px solid rgba(63, 80, 113, 0.12);
-  background: var(--pyflow-surface-strong);
-}
-.pyflow-tool-call__header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-.pyflow-tool-call__title {
-  font-size: 16px;
-  font-weight: 700;
-  line-height: 1.25;
-}
-.pyflow-tool-call__status {
-  border-radius: 999px;
-  padding: 5px 10px;
-  font-size: 12px;
-  font-weight: 700;
-  background: rgba(59, 130, 246, 0.12);
-  color: #1d4ed8;
-}
-.pyflow-tool-call__status--completed {
-  background: rgba(34, 197, 94, 0.14);
-  color: #166534;
-}
-.pyflow-tool-call__status--error {
-  background: rgba(239, 68, 68, 0.14);
-  color: #b42318;
-}
-.pyflow-tool-call__status--rejected {
-  background: rgba(217, 45, 32, 0.16);
-  color: #912018;
-}
-.pyflow-tool-call__section-label {
-  margin-top: 12px;
-  margin-bottom: 6px;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--pyflow-muted);
-}
-.pyflow-tool-call__hint {
-  margin-top: 12px;
-  color: var(--pyflow-muted);
-  font-size: 13px;
-}
-.pyflow-tool-call__code {
-  margin: 0;
-  padding: 12px 14px;
-  border-radius: 12px;
-  background: #13213a;
-  color: #f8fbff;
-  overflow-x: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: ui-monospace, "SFMono-Regular", SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  line-height: 1.5;
-}
-.pyflow-session__empty,
-.pyflow-session__empty-turn {
-  color: var(--pyflow-muted);
-}
-.pyflow-session code {
-  font-family: ui-monospace, "SFMono-Regular", SFMono-Regular, Menlo, monospace;
-  background: rgba(19, 33, 58, 0.08);
-  border-radius: 6px;
-  padding: 0 4px;
-}
-</style>
-"""
+def _render_text_block(content: str, *, kind: _SectionKind) -> str:
+    if kind == "code":
+        return _format_jsonish(content)
+    return content
 
 
 def _message_event_text(event: MessageEvent) -> str:
     text_parts = content_to_str(event.to_llm_message().content)
     return "".join(text_parts).strip()
+
+
+def _prompt_extension_text(event: MessageEvent) -> str:
+    return _text_content_sequence_to_text(event.extended_content)
+
+
+def _tool_inventory_text(tools: Sequence[object]) -> str:
+    lines: list[str] = []
+    for tool in tools:
+        name = str(getattr(tool, "name", type(tool).__name__))
+        description = str(getattr(tool, "description", "")).strip()
+        summary = description.splitlines()[0].strip() if description else ""
+        lines.append(f"- {name}: {summary or 'No description provided.'}")
+        arguments_schema = _tool_arguments_schema(tool)
+        if arguments_schema is None:
+            continue
+        lines.append("  Arguments Schema:")
+        lines.extend(f"    {line}" for line in arguments_schema.splitlines())
+    return "\n".join(lines).strip()
 
 
 def _observation_text(event: ObservationEvent) -> str:
@@ -771,6 +487,13 @@ def _format_jsonish(content: str) -> str:
     return json.dumps(parsed, indent=2, sort_keys=True)
 
 
+def _tool_arguments_schema(tool: object) -> str | None:
+    action_type = getattr(tool, "action_type", None)
+    if action_type is None or not hasattr(action_type, "to_mcp_schema"):
+        return None
+    return json.dumps(action_type.to_mcp_schema(), indent=2, sort_keys=True)
+
+
 def _looks_like_json(content: str) -> bool:
     stripped = content.strip()
     if not stripped:
@@ -812,13 +535,3 @@ def _tool_status_border_style(status: _ToolStatus) -> str:
     if status == "rejected":
         return "bright_red"
     return "blue"
-
-
-def _normalize_status_value(status: str | None) -> str:
-    if not status:
-        return "idle"
-    return status.strip().lower()
-
-
-def _format_status_label(status: str) -> str:
-    return status.replace("_", " ").title()

@@ -1,6 +1,6 @@
 ---
 name: planning
-description: "Create or improve a two-stage reviewed plan for a single non-trivial engineering task: first write the task-specification part and stop for approval, then write the implementation and testing part. Use when asked to make a plan, refine an existing plan or plan section, or continue from a user-provided approved first part. Do not use for trivial edits, broad brainstorming, or immediate coding requests."
+description: "Create or improve a three-stage reviewed plan for a single non-trivial engineering task: first write the task-specification part and stop for approval, then write the implementation and testing part. Use when asked to make a plan, edit an existing plan or plan section, or continue from a user-provided approved first part. Do not use for trivial edits, broad brainstorming, or immediate coding requests."
 user-invocable: true
 ---
 

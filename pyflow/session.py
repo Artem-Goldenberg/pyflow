@@ -8,11 +8,17 @@ from rich.console import Console, ConsoleOptions, RenderResult
 
 from pyflow.display import (
     DisplayEnvironment,
+    _stdout_is_tty,
     detect_display_environment,
-    should_suppress_notebook_display,
+    prepare_live_render,
+    should_suppress_live_inspection,
     sync_interactive_session,
 )
-from pyflow.session_rendering import SessionTranscript, build_transcript
+from pyflow.session_rendering import (
+    SessionTranscript,
+    _SessionRenderView,
+    build_transcript,
+)
 from pyflow.sink import RequestInput
 from pyflow.utils import convert_to_request
 
@@ -36,42 +42,51 @@ class Session:
     @property
     def events(self) -> Sequence[Event]:
         """Recorded OpenHands events for this session, if available."""
-        return tuple(self.conversation.state.events)
+        state = getattr(self.conversation, "state", None)
+        events = getattr(state, "events", ())
+        return tuple(events)
 
     @property
     def execution_status(self) -> str | None:
         """Current OpenHands execution status, if exposed by the conversation."""
-        return self.conversation.state.execution_status.value
+        state = getattr(self.conversation, "state", None)
+        execution_status = getattr(state, "execution_status", None)
+        return getattr(execution_status, "value", None)
 
     @property
     def transcript(self) -> SessionTranscript:
         """Structured transcript built from the current event stream."""
-        return build_transcript(
-            self.events,
-            execution_status=self.execution_status,
-        )
+        return self._build_transcript(view=_SessionRenderView.LIVE)
 
     def __rrshift__(self, lhs: RequestInput) -> Session:
         """Continue this session with request-like input via ``>>``."""
         request = convert_to_request(lhs)
+        start_event_index = len(self.events)
         self.agent.append_message(self.conversation, request)
+        prepare_live_render(self.conversation, start_event_index=start_event_index)
         self.conversation.run()
-        sync_interactive_session(self)
+        sync_interactive_session(self, start_event_index=start_event_index)
         return self
 
     def render(self) -> str:
         """Render the session transcript as plain text."""
         return self.transcript.render_text()
 
-    def render_html(self) -> str:
-        """Render the session transcript as notebook-friendly HTML."""
-        return self.transcript.render_html()
-
     def render_markdown(self) -> str:
         """Render the session transcript as notebook-friendly Markdown."""
         from pyflow.notebook_visualizer import notebook_markdown_for_session
 
         return notebook_markdown_for_session(self)
+
+    def render_full(self) -> str:
+        """Render the full session transcript as plain text."""
+        return self._build_transcript(view=_SessionRenderView.FULL).render_text()
+
+    def render_full_markdown(self) -> str:
+        """Render the full session transcript as notebook-friendly Markdown."""
+        from pyflow.notebook_visualizer import notebook_full_markdown_for_session
+
+        return notebook_full_markdown_for_session(self)
 
     def render_widget(self) -> object:
         """Render the session transcript as a read-only ipywidgets notebook view."""
@@ -81,16 +96,7 @@ class Session:
 
     def display(self, console: Console | None = None) -> None:
         """Render the session transcript with Rich."""
-        self.transcript.display(console=console)
-
-    def display_html(self) -> None:
-        """Display the HTML transcript in IPython/Jupyter environments."""
-        try:
-            from IPython.display import HTML, display
-        except ImportError as exc:
-            raise RuntimeError("IPython is required for Session.display_html().") from exc
-
-        display(HTML(self.render_html()))
+        self._build_transcript(view=_SessionRenderView.FULL).display(console=console)
 
     def display_markdown(self) -> None:
         """Display the Markdown transcript in IPython/Jupyter environments."""
@@ -101,25 +107,27 @@ class Session:
                 "IPython is required for Session.display_markdown()."
             ) from exc
 
-        display_markdown(self.render_markdown(), raw=True)
+        display_markdown(self.render_full_markdown(), raw=True)
 
     def _ipython_display_(self) -> None:
         """High-level IPython/Jupyter display hook."""
         if detect_display_environment() is not DisplayEnvironment.JUPYTER:
             return
-        if should_suppress_notebook_display(self):
+        if should_suppress_live_inspection(self):
             return
         try:
             from IPython.display import display_markdown
         except ImportError as exc:
             raise RuntimeError("IPython is required for notebook display.") from exc
 
-        display_markdown(self.render_markdown(), raw=True)
+        display_markdown(self.render_full_markdown(), raw=True)
 
     def approve_pending_actions(self) -> Session:
         """Continue execution, approving any pending confirmation step."""
+        start_event_index = len(self.events)
+        prepare_live_render(self.conversation, start_event_index=start_event_index)
         self.conversation.run()
-        sync_interactive_session(self)
+        sync_interactive_session(self, start_event_index=start_event_index)
         return self
 
     def reject_pending_actions(
@@ -127,49 +135,48 @@ class Session:
         reason: str = "User rejected the action",
     ) -> Session:
         """Reject the current pending confirmation step."""
+        start_event_index = len(self.events)
+        prepare_live_render(self.conversation, start_event_index=start_event_index)
         self.conversation.reject_pending_actions(reason)
-        sync_interactive_session(self)
+        sync_interactive_session(self, start_event_index=start_event_index)
         return self
 
     def pause(self) -> Session:
         """Pause the active conversation."""
+        start_event_index = len(self.events)
+        prepare_live_render(self.conversation, start_event_index=start_event_index)
         self.conversation.pause()
-        sync_interactive_session(self)
+        sync_interactive_session(self, start_event_index=start_event_index)
         return self
 
     def __str__(self) -> str:
-        """Plain-text transcript for non-Rich contexts."""
-        return self.render()
+        """Inspection-friendly string form for terminal or notebook use."""
+        if detect_display_environment() is DisplayEnvironment.JUPYTER:
+            return self.render_full_markdown()
+        if _stdout_is_tty():
+            console = Console(record=True, force_terminal=True, width=100)
+            console.print(self._build_transcript(view=_SessionRenderView.FULL))
+            return console.export_text(styles=True).rstrip("\n")
+        return self.render_full()
 
     def __repr__(self) -> str:
         """Transcript representation for interactive Python sessions."""
-        if (
-            detect_display_environment() is DisplayEnvironment.JUPYTER
-            and should_suppress_notebook_display(self)
-        ):
+        if should_suppress_live_inspection(self):
             return ""
         if detect_display_environment().is_interactive:
-            return self.render()
+            return self.render_full()
         return (
             f"{type(self).__name__}("
             f"agent={self.agent!r}, "
             f"conversation={self.conversation!r})"
         )
 
-    def _repr_html_(self) -> str:
-        """HTML representation used by IPython/Jupyter frontends."""
-        if should_suppress_notebook_display(self):
-            return ""
-        if detect_display_environment() is DisplayEnvironment.JUPYTER:
-            return ""
-        return self.render_html()
-
     def _repr_markdown_(self) -> str:
         """Markdown representation used by IPython/Jupyter frontends."""
-        if should_suppress_notebook_display(self):
+        if should_suppress_live_inspection(self):
             return ""
         if detect_display_environment() is DisplayEnvironment.JUPYTER:
-            return self.render_markdown()
+            return self.render_full_markdown()
         return ""
 
     def _repr_mimebundle_(
@@ -178,7 +185,7 @@ class Session:
         exclude: Sequence[str] | None = None,
     ) -> dict[str, object]:
         """Notebook MIME bundle used to suppress duplicate live output."""
-        if should_suppress_notebook_display(self):
+        if should_suppress_live_inspection(self):
             return {}
         if detect_display_environment() is DisplayEnvironment.JUPYTER:
             from pyflow.notebook_visualizer import notebook_mimebundle_for_session
@@ -188,10 +195,7 @@ class Session:
                 include=include,
                 exclude=exclude,
             )
-        return {
-            "text/html": self.render_html(),
-            "text/plain": self.render(),
-        }
+        return {"text/plain": self.render_full()}
 
     def __rich_console__(
         self,
@@ -199,4 +203,18 @@ class Session:
         options: ConsoleOptions,
     ) -> RenderResult:
         """Rich transcript rendering for ``console.print(session)``."""
-        yield from self.transcript.__rich_console__(console, options)
+        yield from self._build_transcript(view=_SessionRenderView.FULL).__rich_console__(
+            console,
+            options,
+        )
+
+    def _build_transcript(
+        self,
+        *,
+        view: _SessionRenderView,
+    ) -> SessionTranscript:
+        return build_transcript(
+            self.events,
+            execution_status=self.execution_status,
+            view=view,
+        )

@@ -12,18 +12,24 @@ def test_notebook_assignment_then_session_renders_widget_in_both_cells() -> None
 
     executed = _execute_notebook_or_skip(notebook)
     assignment_outputs = executed.cells[1].outputs
+    assignment_markdown = _output_with_mime(assignment_outputs, "text/markdown")
     session_output = executed.cells[2].outputs[0]
 
-    assert len(assignment_outputs) == 2
-    assert all(
-        output.output_type == "display_data"
-        and "application/vnd.jupyter.widget-view+json" in output.data
-        for output in assignment_outputs
+    assert len(assignment_outputs) == 1
+    assert assignment_markdown.output_type == "display_data"
+    assert "## pyflow session" not in assignment_markdown.data["text/markdown"]
+    assert "Status: **Finished**" in assignment_markdown.data["text/markdown"]
+    assert "System Prompt" not in assignment_markdown.data["text/markdown"]
+    assert (
+        "application/vnd.jupyter.widget-view+json"
+        not in assignment_markdown.data
     )
 
     assert session_output.output_type == "display_data"
     assert "text/markdown" in session_output.data
-    assert "## pyflow session" in session_output.data["text/markdown"]
+    assert "## pyflow session" not in session_output.data["text/markdown"]
+    assert "Status: **Finished**" in session_output.data["text/markdown"]
+    assert "System Prompt" in session_output.data["text/markdown"]
     assert "### User" in session_output.data["text/markdown"]
     assert "Hi" in session_output.data["text/markdown"]
 
@@ -35,13 +41,14 @@ def test_notebook_bare_expression_hides_the_session_auto_display_payload() -> No
 
     executed = _execute_notebook_or_skip(notebook)
     outputs = executed.cells[1].outputs
+    markdown_output = _output_with_mime(outputs, "text/markdown")
 
-    assert len(outputs) == 2
-    assert all(
-        output.output_type == "display_data"
-        and "application/vnd.jupyter.widget-view+json" in output.data
-        for output in outputs
-    )
+    assert len(outputs) == 1
+    assert markdown_output.output_type == "display_data"
+    assert "## pyflow session" not in markdown_output.data["text/markdown"]
+    assert "Status: **Finished**" in markdown_output.data["text/markdown"]
+    assert "System Prompt" not in markdown_output.data["text/markdown"]
+    assert "application/vnd.jupyter.widget-view+json" not in markdown_output.data
 
 
 def test_notebook_session_run_suppresses_blank_backend_log_outputs() -> None:
@@ -50,7 +57,7 @@ def test_notebook_session_run_suppresses_blank_backend_log_outputs() -> None:
     executed = _execute_notebook_or_skip(notebook)
     outputs = executed.cells[1].outputs
 
-    assert len(outputs) == 2
+    assert len(outputs) == 1
     assert not any(_is_empty_rich_html_output(output) for output in outputs)
 
 

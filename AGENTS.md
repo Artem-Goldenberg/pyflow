@@ -36,6 +36,7 @@ The framework should support:
 - When implementing something, if the decision of how to do something is ambiguous,
     always ask me first! Don't choose yourself!
 - Always use type annotations
+- Only type a value as `object` when you intentionally want to accept any value at all; otherwise use the most exact type available
 - Use `TypeVar`/`ParamSpec`/protocols where they improve API safety
 - Prefer dataclasses and abstract base classes when appropriate
 - Keep modules flat and focused

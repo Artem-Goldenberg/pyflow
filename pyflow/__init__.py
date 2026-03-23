@@ -2,8 +2,10 @@ from pyflow.agent import Agent
 from pyflow.context import CodeContext, Context, DocsContext, code, docs
 from pyflow.display import (
     DisplayEnvironment,
+    LiveRenderingTarget,
     detect_display_environment,
     install_rich_pretty,
+    set_live_rendering,
 )
 from pyflow.model import AIModel, Model, TestModel
 from pyflow.notebook_visualizer import NotebookConversationVisualizer
@@ -41,6 +43,7 @@ __all__ = [
     "DocsContext",
     "CodeContext",
     "DisplayEnvironment",
+    "LiveRenderingTarget",
     "docs",
     "code",
     "detect_display_environment",
@@ -54,6 +57,7 @@ __all__ = [
     "generate_models_from_provider",
     "RequestSink",
     "Session",
+    "set_live_rendering",
     "set_backend_log_level",
     "Step",
     "PromptStep",

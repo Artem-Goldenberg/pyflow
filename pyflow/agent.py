@@ -10,6 +10,7 @@ from openhands.sdk import Agent as OpenHandsAgent, BaseConversation, Conversatio
 from pyflow.context import Context
 from pyflow.display import (
     conversation_visualizer_for_environment,
+    prepare_live_render,
     sync_interactive_session,
 )
 from pyflow.model import Model
@@ -214,9 +215,11 @@ class Agent:
         *,
         interactive: bool,
     ) -> Session:
+        if interactive:
+            prepare_live_render(session.conversation, start_event_index=0)
         session.conversation.run()
         if interactive:
-            sync_interactive_session(session)
+            sync_interactive_session(session, start_event_index=0)
         return session
 
     def _run_request(

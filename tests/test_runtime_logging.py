@@ -136,7 +136,10 @@ def test_agent_run_uses_environment_visualizer_helper(
         visualizer_factory,
     )
     monkeypatch.setattr("pyflow.agent.Conversation", conversation_factory)
-    monkeypatch.setattr("pyflow.agent.sync_interactive_session", lambda session: None)
+    monkeypatch.setattr(
+        "pyflow.agent.sync_interactive_session",
+        lambda session, **kwargs: None,
+    )
 
     _ = "Inspect notebook log noise." >> Agent(
         model=Model.test(scripted_responses=(), name="unused"),

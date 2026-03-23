@@ -142,16 +142,38 @@ def test_session_continuation_appends_plain_request_without_global_context() -> 
 
 
 def test_session_str_renders_chat_transcript_with_tool_activity(
+    monkeypatch: pytest.MonkeyPatch,
+    snapshot_regen: bool,
+) -> None:
+    session = _session_with_rendered_tool_activity()
+    monkeypatch.setattr("pyflow.session._stdout_is_tty", lambda: False)
+
+    assert_snapshot("session_full_transcript", str(session), snapshot_regen)
+
+
+def test_session_render_stays_compact_and_conversation_focused(
     snapshot_regen: bool,
 ) -> None:
     session = _session_with_rendered_tool_activity()
 
-    assert_snapshot("session_chat_transcript", str(session), snapshot_regen)
+    assert_snapshot("session_chat_transcript", session.render(), snapshot_regen)
+    assert "System Prompt" not in session.render()
+
+
+def test_session_render_full_includes_prompt_construction_context(
+    snapshot_regen: bool,
+) -> None:
+    session = _session_with_rendered_tool_activity()
+
+    assert_snapshot("session_full_transcript", session.render_full(), snapshot_regen)
+    assert "System Prompt" in session.render_full()
+    assert "Tools:" in session.render_full()
+    assert "Arguments Schema:" in session.render_full()
+    assert "\"properties\"" in session.render_full()
 
 
 def test_session_repr_matches_chat_transcript_in_interactive_mode(
     monkeypatch: pytest.MonkeyPatch,
-    snapshot_regen: bool,
 ) -> None:
     session = _session_with_rendered_tool_activity()
     monkeypatch.setattr(
@@ -159,7 +181,7 @@ def test_session_repr_matches_chat_transcript_in_interactive_mode(
         lambda: DisplayEnvironment.PYTHON_REPL,
     )
 
-    assert_snapshot("session_chat_transcript", repr(session), snapshot_regen)
+    assert repr(session) == session.render_full()
 
 
 def test_session_repr_uses_python_object_style_in_common_cli() -> None:
@@ -186,26 +208,6 @@ def test_session_rich_rendering_uses_snapshot(snapshot_regen: bool) -> None:
     )
 
 
-def test_session_html_rendering_uses_snapshot(snapshot_regen: bool) -> None:
-    session = _session_with_rendered_tool_activity()
-
-    assert_snapshot(
-        "session_html_transcript",
-        session.render_html(),
-        snapshot_regen,
-    )
-
-
-def test_session_repr_html_matches_html_rendering(snapshot_regen: bool) -> None:
-    session = _session_with_rendered_tool_activity()
-
-    assert_snapshot(
-        "session_html_transcript",
-        session._repr_html_(),
-        snapshot_regen,
-    )
-
-
 def test_session_repr_mimebundle_suppresses_immediate_notebook_echo(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -217,7 +219,10 @@ def test_session_repr_mimebundle_suppresses_immediate_notebook_echo(
         lambda: DisplayEnvironment.JUPYTER,
     )
     monkeypatch.setattr("pyflow.display._get_ipython_shell", lambda: shell)
-    monkeypatch.setattr("pyflow.display._sync_notebook_session", lambda session: None)
+    monkeypatch.setattr(
+        "pyflow.display._sync_notebook_session",
+        lambda session, **kwargs: None,
+    )
     monkeypatch.setattr(
         "pyflow.session.detect_display_environment",
         lambda: DisplayEnvironment.JUPYTER,
@@ -226,21 +231,19 @@ def test_session_repr_mimebundle_suppresses_immediate_notebook_echo(
         "pyflow.display._current_notebook_cell_will_display_expression",
         lambda: True,
     )
-    sync_interactive_session(session)
+    sync_interactive_session(session, start_event_index=0)
 
     suppressed = session._repr_mimebundle_()
-    suppressed_html = session._repr_html_()
     assert should_suppress_notebook_display(session)
     _clear_pending_notebook_values()
     displayed = session._repr_mimebundle_()
 
     assert suppressed == {}
-    assert suppressed_html == ""
-    assert displayed["text/plain"] == session.render()
-    assert displayed["text/markdown"] == session.render_markdown()
+    assert displayed["text/plain"] == session.render_full()
+    assert displayed["text/markdown"] == session.render_full_markdown()
 
 
-def test_session_html_shows_pending_confirmation_banner() -> None:
+def test_session_transcript_renders_pending_tool_call_without_html() -> None:
     transcript = SessionTranscript(
         turns=(
             SessionTurn(
@@ -257,11 +260,11 @@ def test_session_html_shows_pending_confirmation_banner() -> None:
         execution_status="waiting_for_confirmation",
     )
 
-    html = transcript.render_html()
+    text = transcript.render_text()
 
-    assert "Approval required" in html
-    assert "session.approve_pending_actions()" in html
-    assert "terminal" in html
+    assert "Tool Call: terminal" in text
+    assert "Arguments:" in text
+    assert "pytest" in text
 
 
 def test_model_from_api_returns_ai_model_and_maps_llm_fields() -> None:

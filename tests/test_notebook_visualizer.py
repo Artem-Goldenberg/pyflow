@@ -14,6 +14,7 @@ from pyflow import Agent, Model, Session, TestModel, tool
 from pyflow.notebook_visualizer import (
     NotebookConversationVisualizer,
     build_notebook_conversation_model,
+    notebook_full_markdown_for_session,
     notebook_markdown_for_session,
 )
 
@@ -34,7 +35,10 @@ def test_agent_uses_notebook_visualizer_in_jupyter(
         lambda: NotebookConversationVisualizer(),
     )
     monkeypatch.setattr("pyflow.agent.Conversation", conversation_factory)
-    monkeypatch.setattr("pyflow.agent.sync_interactive_session", lambda session: None)
+    monkeypatch.setattr(
+        "pyflow.agent.sync_interactive_session",
+        lambda session, **kwargs: None,
+    )
 
     session = "Inspect the notebook renderer." >> Agent(
         model=_test_model_with_finishes("call_finish"),
@@ -68,7 +72,7 @@ def test_build_notebook_conversation_model_tracks_tool_sections() -> None:
     assert "I will add the numbers." in model.turns[1].tool_calls[0].sections[1].content
 
 
-def test_notebook_visualizer_buffers_events_until_refresh() -> None:
+def test_notebook_visualizer_renders_live_on_event() -> None:
     display_target = _CaptureWidgetTarget()
     state = _FakeConversationState()
     visualizer = NotebookConversationVisualizer(display_target=display_target)
@@ -80,20 +84,43 @@ def test_notebook_visualizer_buffers_events_until_refresh() -> None:
         state.events = tuple([*state.events, event])
         visualizer.on_event(event)
 
-    assert display_target.transcript_calls == 0
-    assert display_target.control_calls == 0
-
-    state.execution_status = SimpleNamespace(value="finished")
-    visualizer.refresh()
-
-    assert display_target.transcript_calls == 1
-    assert display_target.control_calls == 1
+    assert display_target.transcript_calls > 0
+    assert display_target.control_calls > 0
     assert all(widget is visualizer.widget for widget in display_target.widgets)
     assert isinstance(visualizer.widget, widgets.VBox)
-    assert "## pyflow session" in display_target.transcripts[-1]
+    assert "## pyflow session" not in display_target.transcripts[-1]
+    assert "Status: **Running**" in display_target.transcripts[-1]
     assert "Tool `session_notebook_sum_tool_test`" in display_target.transcripts[-1]
-    assert any(
-        isinstance(descendant, widgets.Text)
+    widget = cast(widgets.VBox, visualizer.widget)
+    assert getattr(widget.layout, "display", "") == "none"
+    assert not any(
+        isinstance(descendant, (widgets.Text, widgets.Textarea))
+        for descendant in _flatten_widgets(visualizer.widget)
+    )
+
+
+def test_notebook_live_controls_only_show_for_pending_tool_approval() -> None:
+    display_target = _CaptureWidgetTarget()
+    state = _FakeConversationState()
+    visualizer = NotebookConversationVisualizer(display_target=display_target)
+    visualizer.initialize(cast(ConversationStateProtocol, state))
+    session = _session_with_rendered_tool_activity()
+
+    pending_events: list[object] = []
+    for event in session.events:
+        pending_events.append(event)
+        if type(event).__name__ == "ActionEvent":
+            break
+
+    state.events = tuple(pending_events)
+    state.execution_status = SimpleNamespace(value="waiting_for_confirmation")
+    visualizer.begin_session_render(start_event_index=0)
+    visualizer.refresh()
+
+    widget = cast(widgets.VBox, visualizer.widget)
+    assert getattr(widget.layout, "display", "") != "none"
+    assert not any(
+        isinstance(descendant, (widgets.Text, widgets.Textarea))
         for descendant in _flatten_widgets(visualizer.widget)
     )
 
@@ -103,7 +130,8 @@ def test_notebook_markdown_for_session_is_read_only_transcript() -> None:
 
     markdown = notebook_markdown_for_session(session)
 
-    assert "## pyflow session" in markdown
+    assert "## pyflow session" not in markdown
+    assert "Status: **Finished**" in markdown
     assert "### User" in markdown
     assert "### Agent" in markdown
     assert "<details>" in markdown
@@ -123,6 +151,18 @@ def test_session_render_widget_is_read_only() -> None:
     )
 
 
+def test_notebook_full_markdown_includes_system_prompt() -> None:
+    session = _session_with_rendered_tool_activity()
+
+    markdown = notebook_full_markdown_for_session(session)
+
+    assert "System Prompt" in markdown
+    assert "Tool `session_notebook_sum_tool_test`" in markdown
+    assert "Arguments schema:" in markdown
+    assert "\"properties\"" in markdown
+    assert "Continue the conversation" not in markdown
+
+
 @dataclass
 class _CaptureWidgetTarget:
     transcripts: list[str]
@@ -135,6 +175,9 @@ class _CaptureWidgetTarget:
         self.widgets = []
         self.transcript_calls = 0
         self.control_calls = 0
+
+    def begin_live_render(self) -> None:
+        return None
 
     def display_transcript(self, markdown: str) -> None:
         self.transcript_calls += 1
