@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -55,6 +56,22 @@ class Agent:
             runtime_model=self.model,
             interactive=True,
         )
+
+    async def run_async(self, request: Request) -> Session:
+        """
+        Execute a request asynchronously and return a pyflow session.
+
+        The async entry point runs through an isolated, non-interactive runtime
+        so multiple awaited calls can execute concurrently without sharing one
+        live model instance or driving display hooks from a worker thread.
+
+        Args:
+            request: Request to execute.
+
+        Returns:
+            Pyflow session wrapper for this execution.
+        """
+        return await asyncio.to_thread(self._run_async_request, request)
 
     def parallel[T](
         self,
@@ -235,6 +252,13 @@ class Agent:
             interactive=interactive,
         )
         return self._run_prepared_session(session, interactive=interactive)
+
+    def _run_async_request(self, request: Request) -> Session:
+        return self._run_request(
+            request,
+            runtime_model=self.model._fresh_runtime_model(),
+            interactive=False,
+        )
 
     def _run_parallel_worker[T](
         self,

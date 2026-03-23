@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import pytest
 from dataclasses import dataclass
@@ -75,6 +76,16 @@ def test_request_rshift_model_returns_session() -> None:
     assert isinstance(session, Session)
 
 
+def test_agent_run_async_returns_session() -> None:
+    agent = _agent_with_finishes("run_one")
+    request = "Fix the bug." >> tests("unit")
+
+    session = asyncio.run(agent.run_async(request))
+
+    assert isinstance(session, Session)
+    assert session.agent is agent
+
+
 def test_step_rshift_agent_and_model_return_session() -> None:
     step = PromptStep(text="Fix the bug.")
 
@@ -121,6 +132,25 @@ def test_two_fresh_runs_share_same_owned_llm() -> None:
     assert first.agent.model.inner_llm is model.llm
     assert second.agent.model.inner_llm is model.llm
     assert model.llm.call_count == 2
+
+
+def test_agent_run_async_concurrent_gather_uses_fresh_runtime_models() -> None:
+    model = Model.test(scripted_responses=(_finish_message("shared"),))
+    agent = Agent(model=model, tools=())
+    first_request = "Do the first pass." >> tests("first")
+    second_request = "Do the second pass." >> tests("second")
+
+    async def run_both() -> tuple[Session, Session]:
+        return await asyncio.gather(
+            agent.run_async(first_request),
+            agent.run_async(second_request),
+        )
+
+    results = asyncio.run(run_both())
+
+    assert all(isinstance(session, Session) for session in results)
+    assert [session.agent for session in results] == [agent, agent]
+    assert model.llm.call_count == 0
 
 
 def test_session_continuation_appends_plain_request_without_global_context() -> None:
