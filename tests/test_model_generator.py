@@ -7,6 +7,7 @@ import sys
 from email.message import Message
 from pathlib import Path
 from types import ModuleType
+from typing import Sequence
 from urllib import error, request
 
 import pytest
@@ -73,7 +74,9 @@ def test_generate_models_file_preserves_other_provider_blocks(tmp_path: Path) ->
     )
 
     assert "class Models:" in final_content
-    assert "    first:" in final_content
+    assert "    class first:" in final_content
+    assert "    first = first()" in final_content
+    assert "models = Models()" in final_content
     assert "def b72(self) -> Model:" in first_provider_block
     assert "def b16(self) -> Model:" not in first_provider_block
     assert second_provider_block_after == second_provider_block_before
@@ -109,12 +112,14 @@ def test_generate_models_file_upgrades_legacy_provider_blocks(tmp_path: Path) ->
     content = output.read_text(encoding="utf-8")
 
     assert "class Models:" in content
-    assert "legacy:" in content
+    assert "class legacy:" in content
+    assert "legacy = legacy()" in content
+    assert "models = Models()" in content
     assert "_create_model(" in content
     assert "_LazyModelReference(" not in content
 
 
-def test_generated_models_expose_two_level_namespaces_and_lazy_properties(
+def test_generated_models_expose_two_level_namespaces_and_fresh_properties(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -127,23 +132,36 @@ def test_generated_models_expose_two_level_namespaces_and_lazy_properties(
     )
 
     generated = _load_module(module_path=output, module_name="generated_models_runtime_test")
-    provider_models = generated.Models.qw
+    provider_models = generated.models.qw
     family_models = provider_models.qwen
 
-    assert provider_models is generated.Models.qw
+    assert provider_models is generated.models.qw
     assert family_models is provider_models.qwen
     assert not hasattr(provider_models, "qwen_16b")
     assert not hasattr(provider_models, "qwen_small_16b")
 
     monkeypatch.setenv("API_KEY", "manual-key")
-    base_model = family_models.b16
-    assert isinstance(base_model, Model)
-    explicit_llm = base_model.inner_llm
-    assert explicit_llm is base_model.inner_llm
-    assert explicit_llm.model == "qwen-16b"
-    assert explicit_llm.base_url == "https://provider.example/v1"
-    assert isinstance(explicit_llm.api_key, SecretStr)
-    assert explicit_llm.api_key.get_secret_value() == "manual-key"
+    first_model = family_models.b16
+    second_model = family_models.b16
+    flat_model = generated.models.qw_qwen_b16
+    assert isinstance(first_model, Model)
+    assert isinstance(second_model, Model)
+    assert isinstance(flat_model, Model)
+    assert isinstance(generated.models.qw_qwen_small_b16, Model)
+    assert first_model is not second_model
+    assert first_model is not flat_model
+    first_llm = first_model.inner_llm
+    assert first_llm is first_model.inner_llm
+    assert first_llm.model == "qwen-16b"
+    assert first_llm.base_url == "https://provider.example/v1"
+    assert isinstance(first_llm.api_key, SecretStr)
+    assert first_llm.api_key.get_secret_value() == "manual-key"
+
+    monkeypatch.setenv("API_KEY", "rotated-key")
+    rotated_model = family_models.b16
+    rotated_llm = rotated_model.inner_llm
+    assert isinstance(rotated_llm.api_key, SecretStr)
+    assert rotated_llm.api_key.get_secret_value() == "rotated-key"
 
     monkeypatch.delenv("API_KEY", raising=False)
     with pytest.raises(ValueError, match="Missing API key"):
@@ -173,9 +191,11 @@ def test_generated_models_flatten_provider_named_models(
     generated = _load_module(module_path=output, module_name="generated_models_branch_test")
 
     monkeypatch.setenv("API_KEY", "manual-key")
-    assert isinstance(generated.Models.mix.compound, Model)
-    assert isinstance(generated.Models.mix.compound_mini, Model)
-    assert not hasattr(generated.Models.mix, "groq")
+    assert isinstance(generated.models.mix.compound, Model)
+    assert isinstance(generated.models.mix.compound_mini, Model)
+    assert isinstance(generated.models.mix_compound, Model)
+    assert isinstance(generated.models.mix_compound_mini, Model)
+    assert not hasattr(generated.models.mix, "groq")
 
 
 def test_generated_models_flatten_repeated_family_names(
@@ -193,9 +213,62 @@ def test_generated_models_flatten_repeated_family_names(
     generated = _load_module(module_path=output, module_name="generated_models_flatten_test")
 
     monkeypatch.setenv("API_KEY", "manual-key")
-    assert isinstance(generated.Models.groq.qwen.b32, Model)
-    assert isinstance(generated.Models.groq.compound_mini, Model)
-    assert not hasattr(generated.Models.groq.qwen, "qwen3_b32")
+    assert isinstance(generated.models.groq.qwen3.b32, Model)
+    assert isinstance(generated.models.groq.compound_mini, Model)
+    assert isinstance(generated.models.groq_qwen3_b32, Model)
+    assert not hasattr(generated.models.groq, "qwen")
+    assert not hasattr(generated.models.groq.qwen3, "qwen3_b32")
+
+
+def test_generate_models_from_provider_uses_api_key_only_for_discovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "generated_models.py"
+    captured: dict[str, object] = {}
+
+    def fake_discover_provider_models(
+        *,
+        base_url: str,
+        api_key: str | SecretStr | None = None,
+        api_key_env_var: str = model_generator.DEFAULT_API_KEY_ENV_VAR,
+        models_path: str = "/models",
+        timeout_seconds: float = 30.0,
+    ) -> Sequence[str]:
+        captured.update(
+            base_url=base_url,
+            api_key=api_key,
+            api_key_env_var=api_key_env_var,
+            models_path=models_path,
+            timeout_seconds=timeout_seconds,
+        )
+        return ("qwen-16b",)
+
+    monkeypatch.setattr(
+        model_generator,
+        "discover_provider_models",
+        fake_discover_provider_models,
+    )
+
+    model_generator.generate_models_from_provider(
+        provider="qw",
+        base_url="https://provider.example/v1",
+        output_path=output,
+        api_key="discovery-token",
+        api_key_env_var="RUNTIME_KEY",
+    )
+
+    content = output.read_text(encoding="utf-8")
+
+    assert captured == {
+        "base_url": "https://provider.example/v1",
+        "api_key": "discovery-token",
+        "api_key_env_var": "RUNTIME_KEY",
+        "models_path": "/models",
+        "timeout_seconds": 30.0,
+    }
+    assert "discovery-token" not in content
+    assert "RUNTIME_KEY" in content
 
 
 def test_discover_provider_models_calls_models_endpoint(
