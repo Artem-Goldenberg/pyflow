@@ -512,7 +512,7 @@ def _render_provider_block(provider_spec: _ProviderSpec) -> Sequence[str]:
     ]
     lines.extend(
         _render_provider_class_block(
-            provider_class_name=provider_spec.provider_name,
+            provider_class_name=_provider_models_class_name(provider_spec.provider_name),
             grouped_entries=grouped_entries,
             base_url=provider_spec.base_url,
             api_key_env_var=provider_spec.api_key_env_var,
@@ -521,8 +521,8 @@ def _render_provider_block(provider_spec: _ProviderSpec) -> Sequence[str]:
     )
     lines.append(
         "    "
-        f"{provider_spec.provider_name} = {provider_spec.provider_name}()"
-        "  # pyright: ignore[reportAssignmentType]"
+        f"{provider_spec.provider_name} = "
+        f"{_provider_models_class_name(provider_spec.provider_name)}()"
     )
 
     for flat_entry in flat_entries:
@@ -737,7 +737,8 @@ def _render_family_class_block(
     api_key_env_var: str,
     indent: str,
 ) -> Sequence[str]:
-    lines = [f"{indent}class {family_alias}:"]
+    family_class_name = _family_models_class_name(family_alias)
+    lines = [f"{indent}class {family_class_name}:"]
     body: list[str] = []
 
     for index, entry in enumerate(entries):
@@ -761,8 +762,7 @@ def _render_family_class_block(
     return (
         *lines,
         *body,
-        f"{indent}{family_alias} = {family_alias}()"
-        "  # pyright: ignore[reportAssignmentType]",
+        f"{indent}{family_alias} = {family_class_name}()",
     )
 
 
@@ -827,6 +827,21 @@ def _render_model_property_block(
         f"{indent}        api_key_env_var={api_key_env_var!r},",
         f"{indent}    )",
     )
+
+
+def _provider_models_class_name(provider_name: str) -> str:
+    return f"_{_identifier_to_class_name(provider_name)}ProviderModels"
+
+
+def _family_models_class_name(family_alias: str) -> str:
+    return f"_{_identifier_to_class_name(family_alias)}FamilyModels"
+
+
+def _identifier_to_class_name(value: str) -> str:
+    parts = [part for part in value.split("_") if part]
+    if not parts:
+        return "Generated"
+    return "".join(part[:1].upper() + part[1:] for part in parts)
 
 
 def _render_provider_spec_comment(provider_spec: _ProviderSpec) -> str:

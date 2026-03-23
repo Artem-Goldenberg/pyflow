@@ -75,8 +75,8 @@ def test_generate_models_file_preserves_other_provider_blocks(tmp_path: Path) ->
     )
 
     assert "class Models:" in final_content
-    assert "    class first:" in final_content
-    assert "    first = first()" in final_content
+    assert "    class _FirstProviderModels:" in final_content
+    assert "    first = _FirstProviderModels()" in final_content
     assert "models = Models()" in final_content
     assert "def b72(self) -> Model:" in first_provider_block
     assert "def b16(self) -> Model:" not in first_provider_block
@@ -113,11 +113,33 @@ def test_generate_models_file_upgrades_legacy_provider_blocks(tmp_path: Path) ->
     content = output.read_text(encoding="utf-8")
 
     assert "class Models:" in content
-    assert "class legacy:" in content
-    assert "legacy = legacy()" in content
+    assert "class _LegacyProviderModels:" in content
+    assert "legacy = _LegacyProviderModels()" in content
     assert "models = Models()" in content
     assert "_create_model(" in content
     assert "_LazyModelReference(" not in content
+
+
+def test_generated_models_use_distinct_private_class_names_for_namespaces(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "generated_models.py"
+    model_generator.generate_models_file(
+        provider_name="qw",
+        base_url="https://provider.example/v1",
+        model_ids=("qwen-16b", "qwen-small-16b"),
+        output_path=output,
+    )
+
+    content = output.read_text(encoding="utf-8")
+
+    assert "class _QwProviderModels:" in content
+    assert "qw = _QwProviderModels()" in content
+    assert "class _QwenFamilyModels:" in content
+    assert "qwen = _QwenFamilyModels()" in content
+    assert "class qw:" not in content
+    assert "class qwen:" not in content
+    assert "pyright: ignore[reportAssignmentType]" not in content
 
 
 def test_generated_models_expose_two_level_namespaces_and_fresh_properties(
