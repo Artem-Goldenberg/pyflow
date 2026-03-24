@@ -101,6 +101,8 @@ results = agent.parallel(
     chunks,
     lambda chunk: f"Remove anomalies in: {chunk}",
     max_concurrency=8,
+    # Optional: set this only for low-rate-limit providers/models.
+    max_requests_per_second=1.0,
 )
 
 for result in results:
@@ -112,7 +114,8 @@ for result in results:
 
 `Agent.parallel(...)` is synchronous. Successful entries are normal `Session`
 objects; failures are returned inline as `ParallelFailure`. Agent tools and
-workspace are reused as configured for each worker run.
+workspace are reused as configured for each worker run. By default there is no
+rate cap unless `max_requests_per_second` is set.
 
 ## Git Worktree Orchestration
 

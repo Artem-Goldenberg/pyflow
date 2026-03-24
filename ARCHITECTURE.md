@@ -92,7 +92,7 @@ Type-check-only imports are used to avoid runtime cycles (e.g., `steps.py` refer
 
 Parallel batch flow:
 
-1. User calls `agent.parallel(items, build_request, max_concurrency=...)`
+1. User calls `agent.parallel(items, build_request, max_concurrency=..., max_requests_per_second=...)`
 2. Pyflow converts each built request input into a `Request`
 3. Each worker clones a fresh runtime model via `_fresh_runtime_model()`
 4. Each worker creates and runs its own OpenHands conversation

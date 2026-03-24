@@ -123,6 +123,20 @@ def test_parallel_rejects_non_positive_max_concurrency(max_concurrency: int) -> 
         agent.parallel([], lambda item: str(item), max_concurrency=max_concurrency)
 
 
+@pytest.mark.parametrize("max_requests_per_second", [0.0, -1.0])
+def test_parallel_rejects_non_positive_max_requests_per_second(
+    max_requests_per_second: float,
+) -> None:
+    agent = Agent(model=_test_model_with_finishes("unused"), tools=())
+
+    with pytest.raises(ValueError, match="max_requests_per_second"):
+        agent.parallel(
+            [],
+            lambda item: str(item),
+            max_requests_per_second=max_requests_per_second,
+        )
+
+
 def test_parallel_empty_input_returns_empty_list(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -141,6 +155,33 @@ def test_parallel_empty_input_returns_empty_list(
     monkeypatch.setattr(Agent, "_prepare_session", fail_prepare_session)
 
     assert agent.parallel([], lambda item: str(item)) == []
+
+
+def test_parallel_does_not_create_rate_limiter_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = Agent(model=_test_model_with_finishes("unused"), tools=())
+
+    def fail_pacer_construction(*, max_requests_per_second: float) -> None:
+        del max_requests_per_second
+        raise AssertionError("_ParallelRequestPacer should not be constructed by default.")
+
+    def fake_prepare_session(
+        self: Agent,
+        request: Request,
+        *,
+        runtime_model: object,
+        interactive: bool,
+    ) -> Session:
+        del request, runtime_model, interactive
+        return Session(agent=self, conversation=cast(BaseConversation, _InstantConversation()))
+
+    monkeypatch.setattr("pyflow.agent._ParallelRequestPacer", fail_pacer_construction)
+    monkeypatch.setattr(Agent, "_prepare_session", fake_prepare_session)
+
+    results = agent.parallel(["one", "two"], lambda item: item)
+
+    assert all(isinstance(result, Session) for result in results)
 
 
 def test_parallel_returns_inline_build_request_failures() -> None:
@@ -221,6 +262,57 @@ def test_parallel_limits_worker_concurrency(
 
     assert all(isinstance(result, Session) for result in results)
     assert tracker.max_active == 2
+
+
+def test_parallel_limits_request_start_rate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _FakeClock()
+    run_start_times: list[float] = []
+    run_start_lock = threading.Lock()
+    agent = Agent(model=_test_model_with_finishes("unused"), tools=())
+
+    def fake_prepare_session(
+        self: Agent,
+        request: Request,
+        *,
+        runtime_model: object,
+        interactive: bool,
+    ) -> Session:
+        del self, request, runtime_model, interactive
+        return Session(
+            agent=agent,
+            conversation=cast(BaseConversation, _InstantConversation()),
+        )
+
+    def fake_run_prepared_session(
+        self: Agent,
+        session: Session,
+        *,
+        interactive: bool,
+    ) -> Session:
+        del self, interactive
+        with run_start_lock:
+            run_start_times.append(clock.monotonic())
+        return session
+
+    monkeypatch.setattr("pyflow.agent.monotonic", clock.monotonic)
+    monkeypatch.setattr("pyflow.agent.sleep", clock.sleep)
+    monkeypatch.setattr(Agent, "_prepare_session", fake_prepare_session)
+    monkeypatch.setattr(Agent, "_run_prepared_session", fake_run_prepared_session)
+
+    results = agent.parallel(
+        [0, 1, 2],
+        lambda item: str(item),
+        max_concurrency=3,
+        max_requests_per_second=1.0,
+    )
+
+    assert all(isinstance(result, Session) for result in results)
+    assert len(run_start_times) == 3
+    ordered_start_times = sorted(run_start_times)
+    assert ordered_start_times[1] - ordered_start_times[0] >= 1.0
+    assert ordered_start_times[2] - ordered_start_times[1] >= 1.0
 
 
 def test_parallel_does_not_use_interactive_display_hooks(
@@ -338,6 +430,24 @@ class _RunTracker:
 
     def __post_init__(self) -> None:
         self.condition = threading.Condition()
+
+
+class _FakeClock:
+    now: float
+    _lock: threading.Lock
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self._lock = threading.Lock()
+
+    def monotonic(self) -> float:
+        with self._lock:
+            return self.now
+
+    def sleep(self, seconds: float) -> None:
+        assert seconds >= 0.0
+        with self._lock:
+            self.now += seconds
 
 
 class _TrackingConversation:

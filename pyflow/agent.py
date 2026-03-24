@@ -5,6 +5,8 @@ import dataclasses
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
+from time import monotonic, sleep
 from typing import Callable, cast, Sequence
 
 from openhands.sdk import (
@@ -125,6 +127,7 @@ class Agent:
         build_request: Callable[[T], RequestInput],
         *,
         max_concurrency: int | None = None,
+        max_requests_per_second: float | None = None,
     ) -> list[Session | ParallelFailure[T]]:
         """
         Execute many independent requests concurrently against this agent.
@@ -133,12 +136,16 @@ class Agent:
             items: Input items to process.
             build_request: Callable that maps one item into a request-like input.
             max_concurrency: Optional maximum number of concurrent workers.
+            max_requests_per_second: Optional global request start rate cap
+                across workers. When ``None``, no explicit rate cap is applied.
 
         Returns:
             Ordered results containing either successful sessions or inline failures.
         """
         if max_concurrency is not None and max_concurrency < 1:
             raise ValueError("max_concurrency must be at least 1.")
+        if max_requests_per_second is not None and max_requests_per_second <= 0:
+            raise ValueError("max_requests_per_second must be greater than 0.")
         if not items:
             return []
 
@@ -165,6 +172,11 @@ class Agent:
         worker_count = len(requests)
         if max_concurrency is not None:
             worker_count = min(worker_count, max_concurrency)
+        request_pacer: _ParallelRequestPacer | None = None
+        if max_requests_per_second is not None:
+            request_pacer = _ParallelRequestPacer(
+                max_requests_per_second=max_requests_per_second
+            )
 
         with ThreadPoolExecutor(
             max_workers=worker_count,
@@ -177,6 +189,7 @@ class Agent:
                     index,
                     item,
                     request,
+                    request_pacer,
                 )
                 future_to_index[future] = index
 
@@ -324,6 +337,7 @@ class Agent:
         index: int,
         item: T,
         request: Request,
+        request_pacer: _ParallelRequestPacer | None,
     ) -> Session | ParallelFailure[T]:
         session: Session | None = None
         try:
@@ -333,6 +347,8 @@ class Agent:
                 runtime_model=runtime_model,
                 interactive=False,
             )
+            if request_pacer is not None:
+                request_pacer.wait_turn()
             return self._run_prepared_session(session, interactive=False)
         except Exception as exc:
             return ParallelFailure(
@@ -389,3 +405,20 @@ class Agent:
             "Choose a model with native tool support or set "
             "`native_tool_calling=False` so OpenHands can mock tool calls."
         )
+
+
+class _ParallelRequestPacer:
+    def __init__(self, *, max_requests_per_second: float) -> None:
+        self._interval_seconds = 1.0 / max_requests_per_second
+        self._next_allowed_at = 0.0
+        self._lock = Lock()
+
+    def wait_turn(self) -> None:
+        while True:
+            with self._lock:
+                now = monotonic()
+                if now >= self._next_allowed_at:
+                    self._next_allowed_at = now + self._interval_seconds
+                    return
+                sleep_duration = self._next_allowed_at - now
+            sleep(sleep_duration)
