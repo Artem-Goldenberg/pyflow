@@ -26,8 +26,11 @@ from pyflow import (
     AIModel,
     Agent,
     DisplayEnvironment,
+    FilePromptPreset,
     Model,
+    OpenHandsPromptPreset,
     PromptStep,
+    PromptPreset,
     Session,
     SessionResultMissingError,
     SessionResultValidationError,
@@ -102,7 +105,7 @@ def test_agent_replacing_overrides_selected_fields_only() -> None:
         model=_test_model_with_finishes("run_one"),
         contexts=(docs("plan.md"),),
         tools=(),
-        system_prompt="base_prompt.j2",
+        system_prompt="Be exact.",
         workspace="workspace-a",
     )
 
@@ -126,7 +129,7 @@ def test_agent_replacing_supports_multiple_overrides() -> None:
         model=base_model,
         contexts=base_contexts,
         tools=(),
-        system_prompt="base_prompt.j2",
+        system_prompt="Base prompt.",
         workspace="workspace-a",
     )
 
@@ -134,19 +137,19 @@ def test_agent_replacing_supports_multiple_overrides() -> None:
         model=updated_model,
         contexts=updated_contexts,
         tools=(_session_render_sum_tool,),
-        system_prompt="custom_prompt.j2",
+        system_prompt=FilePromptPreset(path="custom_prompt.j2"),
         workspace="workspace-b",
     )
 
     assert replaced.model is updated_model
     assert replaced.contexts == updated_contexts
     assert replaced.tools == (_session_render_sum_tool,)
-    assert replaced.system_prompt == "custom_prompt.j2"
+    assert replaced.system_prompt == FilePromptPreset(path="custom_prompt.j2")
     assert replaced.workspace == "workspace-b"
     assert agent.model is base_model
     assert agent.contexts == base_contexts
     assert agent.tools == ()
-    assert agent.system_prompt == "base_prompt.j2"
+    assert agent.system_prompt == "Base prompt."
     assert agent.workspace == "workspace-a"
 
 
@@ -629,9 +632,8 @@ def test_agent_builds_openhands_agent_with_test_model_llm() -> None:
 
     assert isinstance(openhands_agent.llm, TestLLM)
     assert openhands_agent.llm is model.llm
-    assert (
-        openhands_agent.system_prompt_filename
-        == OpenHandsRuntimeAgent.model_fields["system_prompt_filename"].default
+    assert openhands_agent.system_prompt_filename == cast(
+        str, OpenHandsRuntimeAgent.model_fields["system_prompt_filename"].default
     )
     assert openhands_agent.system_prompt_kwargs["cli_mode"] is True
 
@@ -651,17 +653,62 @@ def test_agent_builds_noninteractive_openhands_agent_for_background_runs() -> No
     assert openhands_agent.system_prompt_kwargs["cli_mode"] is False
 
 
-def test_agent_builds_openhands_agent_with_custom_system_prompt() -> None:
+def test_agent_builds_openhands_agent_with_literal_system_prompt() -> None:
     model = Model.test(
         scripted_responses=(
             Message(role="assistant", content=[TextContent(text="Done")]),
         )
     )
-    agent = Agent(model=model, tools=(), system_prompt="custom_prompt.j2")
+    agent = Agent(model=model, tools=(), system_prompt="Be terse.")
+
+    openhands_agent = agent._build_openhands_agent(runtime_model=model, interactive=False)
+
+    assert openhands_agent.static_system_message == "Be terse."
+
+
+def test_agent_builds_openhands_agent_with_openhands_prompt_preset() -> None:
+    model = Model.test(
+        scripted_responses=(
+            Message(role="assistant", content=[TextContent(text="Done")]),
+        )
+    )
+    agent = Agent(
+        model=model,
+        tools=(),
+        system_prompt=OpenHandsPromptPreset(filename="custom_prompt.j2"),
+    )
 
     openhands_agent = agent._build_openhands_agent(runtime_model=model, interactive=False)
 
     assert openhands_agent.system_prompt_filename == "custom_prompt.j2"
+
+
+def test_agent_builds_openhands_agent_with_file_prompt_preset() -> None:
+    model = Model.test(
+        scripted_responses=(
+            Message(role="assistant", content=[TextContent(text="Done")]),
+        )
+    )
+    agent = Agent(
+        model=model,
+        tools=(),
+        system_prompt=FilePromptPreset(path=Path("custom_prompt.j2")),
+    )
+
+    openhands_agent = agent._build_openhands_agent(runtime_model=model, interactive=False)
+
+    assert openhands_agent.system_prompt_filename == "custom_prompt.j2"
+
+
+def test_agent_system_prompt_default_is_openhands_preset() -> None:
+    agent = Agent(model=_test_model_with_finishes("unused"), tools=())
+
+    assert isinstance(agent.system_prompt, PromptPreset)
+    assert agent.system_prompt == OpenHandsPromptPreset(
+        filename=cast(
+            str, OpenHandsRuntimeAgent.model_fields["system_prompt_filename"].default
+        )
+    )
 
 
 def test_agent_rejects_models_without_native_tool_calling_support() -> None:
@@ -745,8 +792,6 @@ def _content_as_text(message: Message) -> str:
         if isinstance(item, TextContent):
             parts.append(item.text)
     return "\n".join(parts)
-
-
 class _FakeNotebookShell:
     execution_count: int
 

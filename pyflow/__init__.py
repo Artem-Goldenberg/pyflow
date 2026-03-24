@@ -1,4 +1,4 @@
-from pyflow.agent import Agent
+from pyflow.agent import Agent, FilePromptPreset, OpenHandsPromptPreset, PromptPreset
 from pyflow.context import CodeContext, Context, DocsContext, code, docs
 from pyflow.display import (
     DisplayEnvironment,
@@ -50,6 +50,7 @@ __all__ = [
     "DocsContext",
     "CodeContext",
     "DisplayEnvironment",
+    "FilePromptPreset",
     "LiveRenderingTarget",
     "docs",
     "code",
@@ -58,8 +59,10 @@ __all__ = [
     "install_rich_pretty",
     "NotebookConversationVisualizer",
     "OutputSpec",
+    "OpenHandsPromptPreset",
     "Model",
     "ParallelFailure",
+    "PromptPreset",
     "discover_provider_models",
     "generate_models_file",
     "generate_models_from_provider",

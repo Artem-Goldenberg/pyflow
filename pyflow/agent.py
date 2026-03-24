@@ -15,6 +15,7 @@ from openhands.sdk import (
     Conversation,
     Tool as OpenHandsToolSpec,
 )
+from pydantic import Field as PydanticField
 
 from pyflow.context import Context
 from pyflow.display import (
@@ -32,9 +33,24 @@ from pyflow.tooling import Tool, compile_openhands_tools, default_agent_tools
 from pyflow.utils import convert_to_request
 
 
-DEFAULT_SYSTEM_PROMPT = cast(
+DEFAULT_SYSTEM_PROMPT_TEMPLATE = cast(
     str, OpenHandsAgent.model_fields["system_prompt_filename"].default,
 )
+
+
+@dataclass(frozen=True, kw_only=True)
+class PromptPreset:
+    pass
+
+
+@dataclass(frozen=True, kw_only=True)
+class OpenHandsPromptPreset(PromptPreset):
+    filename: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class FilePromptPreset(PromptPreset):
+    path: str | Path
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -46,14 +62,18 @@ class Agent:
         model: Pyflow model that owns the OpenHands LLM used for execution.
         contexts: Contexts rendered globally before request steps.
         tools: Tools attached to every run.
-        system_prompt: OpenHands system prompt template filename or absolute path.
+        system_prompt: Literal system prompt text or preset describing template lookup.
         workspace: OpenHands workspace path for execution.
     """
 
     model: Model
     contexts: Sequence[Context] = ()
     tools: Sequence[Tool] = field(default_factory=default_agent_tools)
-    system_prompt: str | Path = DEFAULT_SYSTEM_PROMPT
+    system_prompt: str | PromptPreset = field(
+        default_factory=lambda: OpenHandsPromptPreset(
+            filename=DEFAULT_SYSTEM_PROMPT_TEMPLATE
+        )
+    )
     workspace: str | Path = field(default_factory=Path.cwd)
 
     def replacing(
@@ -62,7 +82,7 @@ class Agent:
         model: Model | None = None,
         contexts: Sequence[Context] | None = None,
         tools: Sequence[Tool] | None = None,
-        system_prompt: str | Path | None = None,
+        system_prompt: str | PromptPreset | None = None,
         workspace: str | Path | None = None,
     ) -> Agent:
         """
@@ -72,7 +92,7 @@ class Agent:
             model: Optional replacement model.
             contexts: Optional replacement global contexts.
             tools: Optional replacement default tools.
-            system_prompt: Optional replacement system prompt template.
+            system_prompt: Optional replacement literal prompt or prompt preset.
             workspace: Optional replacement workspace path.
 
         Returns:
@@ -370,10 +390,30 @@ class Agent:
             runtime_model=runtime_model,
             tool_specs=tool_specs,
         )
-        return OpenHandsAgent(
+        if isinstance(self.system_prompt, OpenHandsPromptPreset):
+            return OpenHandsAgent(
+                llm=runtime_model.inner_llm,
+                tools=list(tool_specs),
+                system_prompt_filename=self.system_prompt.filename,
+                system_prompt_kwargs={"cli_mode": interactive},
+            )
+        if isinstance(self.system_prompt, FilePromptPreset):
+            return OpenHandsAgent(
+                llm=runtime_model.inner_llm,
+                tools=list(tool_specs),
+                system_prompt_filename=str(Path(self.system_prompt.path).expanduser()),
+                system_prompt_kwargs={"cli_mode": interactive},
+            )
+        literal_system_prompt = self.system_prompt
+        if not isinstance(literal_system_prompt, str):
+            raise TypeError(
+                "system_prompt must be a literal string or a PromptPreset instance."
+            )
+        return _LiteralSystemPromptOpenHandsAgent(
+            literal_system_prompt=literal_system_prompt,
             llm=runtime_model.inner_llm,
             tools=list(tool_specs),
-            system_prompt_filename=str(self.system_prompt),
+            system_prompt_filename=DEFAULT_SYSTEM_PROMPT_TEMPLATE,
             system_prompt_kwargs={"cli_mode": interactive},
         )
 
@@ -422,3 +462,15 @@ class _ParallelRequestPacer:
                     return
                 sleep_duration = self._next_allowed_at - now
             sleep(sleep_duration)
+
+
+class _LiteralSystemPromptOpenHandsAgent(OpenHandsAgent):
+    literal_system_prompt: str = PydanticField(
+        ...,
+        exclude=True,
+        repr=False,
+    )
+
+    @property
+    def static_system_message(self) -> str:
+        return self.literal_system_prompt
