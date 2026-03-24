@@ -226,17 +226,26 @@ class Agent:
             visualizer = conversation_visualizer_for_environment()
             if visualizer is not None:
                 return Conversation(
-                    agent=self._build_openhands_agent(runtime_model=runtime_model),
+                    agent=self._build_openhands_agent(
+                        runtime_model=runtime_model,
+                        interactive=interactive,
+                    ),
                     workspace=self.workspace,
                     visualizer=visualizer,
                 )
             return Conversation(
-                agent=self._build_openhands_agent(runtime_model=runtime_model),
+                agent=self._build_openhands_agent(
+                    runtime_model=runtime_model,
+                    interactive=interactive,
+                ),
                 workspace=self.workspace,
                 visualizer=None,
             )
         return Conversation(
-            agent=self._build_openhands_agent(runtime_model=runtime_model),
+            agent=self._build_openhands_agent(
+                runtime_model=runtime_model,
+                interactive=interactive,
+            ),
             workspace=self.workspace,
             visualizer=None,
         )
@@ -317,10 +326,15 @@ class Agent:
                 session=session,
             )
 
-    def _build_openhands_agent(self, *, runtime_model: Model) -> OpenHandsAgent:
+    def _build_openhands_agent(
+        self,
+        *,
+        runtime_model: Model,
+        interactive: bool,
+    ) -> OpenHandsAgent:
         tool_specs = compile_openhands_tools(self.tools)
         return OpenHandsAgent(
             llm=runtime_model.inner_llm,
             tools=list(tool_specs),
-            system_prompt_kwargs={"cli_mode": True},
+            system_prompt_kwargs={"cli_mode": interactive},
         )

@@ -46,18 +46,16 @@ python -m taskboard.cli --db taskboard.json done 1
 
 ## Demo Notebook
 
-Open [`multi_agent_demo.ipynb`](multi_agent_demo.ipynb) in Jupyter from the main `pyflow` repository.
+Open [`demo/multi-agent.ipynb`](../demo/multi-agent.ipynb) in Jupyter from the main `pyflow` repository.
 
 The notebook will:
 
 1. Copy this project into a disposable standalone Git repository.
-2. Show the base CLI behavior quickly.
+2. Show the base test state quickly.
 3. Create one worktree per feature task.
-4. Run two feature agents in parallel.
-5. Start a merge worktree and show the conflict state before resolution.
-6. Ask a third agent to resolve the merge with wrapper-provided Git status and diff context.
-7. Finalize the merge and show the app with both features implemented.
+4. Build two inline pyflow requests.
+5. Run the two agents concurrently with `await asyncio.gather(...)`.
+6. Inspect the resulting branch state and test output in each workspace.
 
-The notebook uses separate `Agent` instances plus Python concurrency rather than
-`Agent.parallel(...)`, because each Git worktree needs its own isolated
-`workspace` path.
+The notebook imports a ready `model` and base `agent` from `model_setup.py`,
+then derives two workspace-specific agents from that shared setup.

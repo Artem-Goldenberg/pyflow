@@ -12,9 +12,18 @@ load_dotenv()
 
 install_rich_pretty()
 
-model = Model.subscription()
+from pyflow.gittools import GitRepo
 
-agent = Agent(model=model)
+repo = GitRepo.open(".")
+
+worktree = repo.create_worktree(".worktree/")
+
+repo.remove_worktree()
+
+
+# model = Model.subscription()
+
+# agent = Agent(model=model)
 
 # print(os.environ["GROQ_API_KEY"])
 

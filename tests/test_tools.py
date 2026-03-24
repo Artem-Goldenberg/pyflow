@@ -473,7 +473,10 @@ def test_request_attachment_operator_accepts_tools() -> None:
 
 def test_agent_default_tools_resolve_to_terminal_read_file_and_apply_patch() -> None:
     agent = Agent(model=_empty_test_model())
-    openhands_agent = agent._build_openhands_agent(runtime_model=agent.model)
+    openhands_agent = agent._build_openhands_agent(
+        runtime_model=agent.model,
+        interactive=True,
+    )
 
     assert [tool_spec.name for tool_spec in openhands_agent.tools] == [
         "terminal",
@@ -510,7 +513,10 @@ def test_agent_uses_only_agent_tools_for_runtime_registration() -> None:
     assert "Use tool: merge_request_tool_test." in rendered_request
     assert "Use tool: read_file." in rendered_request
     assert "Use tool: apply_patch." in rendered_request
-    openhands_agent = agent._build_openhands_agent(runtime_model=agent.model)
+    openhands_agent = agent._build_openhands_agent(
+        runtime_model=agent.model,
+        interactive=True,
+    )
 
     assert [tool_spec.name for tool_spec in openhands_agent.tools] == [
         "terminal",

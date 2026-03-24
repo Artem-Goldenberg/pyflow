@@ -590,10 +590,26 @@ def test_agent_builds_openhands_agent_with_test_model_llm() -> None:
     )
     # This test verifies LLM wiring, not built-in tool wiring.
     agent = Agent(model=model, tools=())
-    openhands_agent = agent._build_openhands_agent(runtime_model=model)
+    openhands_agent = agent._build_openhands_agent(runtime_model=model, interactive=True)
 
     assert isinstance(openhands_agent.llm, TestLLM)
     assert openhands_agent.llm is model.llm
+    assert openhands_agent.system_prompt_kwargs["cli_mode"] is True
+
+
+def test_agent_builds_noninteractive_openhands_agent_for_background_runs() -> None:
+    model = Model.test(
+        scripted_responses=(
+            Message(role="assistant", content=[TextContent(text="Done")]),
+        )
+    )
+    agent = Agent(model=model, tools=())
+
+    openhands_agent = agent._build_openhands_agent(runtime_model=model, interactive=False)
+
+    assert isinstance(openhands_agent.llm, TestLLM)
+    assert openhands_agent.llm is model.llm
+    assert openhands_agent.system_prompt_kwargs["cli_mode"] is False
 
 
 def test_agent_render_message_with_context(snapshot_regen: bool) -> None:

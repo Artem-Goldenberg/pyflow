@@ -40,6 +40,25 @@ def test_ai_model_fresh_runtime_model_clones_llm_and_resets_metrics() -> None:
     assert fresh.llm is not llm
     assert fresh.llm.stream is True
     assert fresh.llm.metrics is not llm.metrics
+    assert fresh.llm._telemetry is not llm._telemetry
+
+
+def test_ai_model_fresh_runtime_model_preserves_subscription_mode() -> None:
+    llm = LLM(
+        model="openai/gpt-5.2-codex",
+        api_key=SecretStr("test-key"),
+        base_url="https://chatgpt.com/backend-api/codex",
+        stream=True,
+    )
+    llm._is_subscription = True
+    model = AIModel(llm=llm)
+
+    fresh = model._fresh_runtime_model()
+
+    assert fresh.llm is not llm
+    assert fresh.llm.is_subscription is True
+    assert fresh.llm.stream is True
+    assert fresh.llm._telemetry is not llm._telemetry
 
 
 def test_test_model_fresh_runtime_model_replays_scripted_responses() -> None:
@@ -219,7 +238,11 @@ def test_parallel_does_not_use_interactive_display_hooks(
     monkeypatch.setattr("pyflow.agent.conversation_visualizer_for_environment", fail_visualizer)
     monkeypatch.setattr("pyflow.agent.sync_interactive_session", fail_sync)
     monkeypatch.setattr("pyflow.agent.Conversation", _InstantConversation)
-    monkeypatch.setattr(Agent, "_build_openhands_agent", lambda self, *, runtime_model: object())
+    monkeypatch.setattr(
+        Agent,
+        "_build_openhands_agent",
+        lambda self, *, runtime_model, interactive: object(),
+    )
 
     results = agent.parallel(["one"], lambda item: item)
 
