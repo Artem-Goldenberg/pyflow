@@ -475,6 +475,18 @@ def test_model_from_api_returns_ai_model_and_maps_llm_fields() -> None:
     assert model.llm.log_completions_folder == "logs/completions"
 
 
+def test_model_from_api_allows_missing_api_key() -> None:
+    model = Model.from_api(
+        name="local/model",
+        base_url="http://localhost:11434/v1",
+    )
+
+    assert isinstance(model, AIModel)
+    assert model.llm.model == "local/model"
+    assert model.llm.base_url == "http://localhost:11434/v1"
+    assert model.llm.api_key is None
+
+
 def test_ai_model_direct_wrapper_preserves_llm_identity() -> None:
     llm = LLM(model="openai/gpt-4.1", api_key=SecretStr("test-key"))
     model = AIModel(llm=llm)

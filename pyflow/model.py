@@ -41,7 +41,7 @@ class Model(ABC):
     def from_api(
         *,
         name: str,
-        api_key: SecretStr,
+        api_key: SecretStr | None = None,
         base_url: str | None = None,
         max_input_tokens: int | None = None,
         max_output_tokens: int | None = None,
@@ -52,7 +52,7 @@ class Model(ABC):
 
         Args:
             name: Provider-specific model identifier.
-            api_key: Provider API key.
+            api_key: Optional provider API key.
             base_url: Optional provider base URL.
             max_input_tokens: Optional input token limit.
             max_output_tokens: Optional output token limit.
@@ -215,7 +215,7 @@ class TestModel(Model):
 def _create_api_llm(
     *,
     name: str,
-    api_key: SecretStr,
+    api_key: SecretStr | None = None,
     base_url: str | None = None,
     max_input_tokens: int | None = None,
     max_output_tokens: int | None = None,

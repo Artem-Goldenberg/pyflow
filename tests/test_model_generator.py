@@ -187,8 +187,10 @@ def test_generated_models_expose_two_level_namespaces_and_fresh_properties(
     assert rotated_llm.api_key.get_secret_value() == "rotated-key"
 
     monkeypatch.delenv("API_KEY", raising=False)
-    with pytest.raises(ValueError, match="Missing API key"):
-        _ = family_models.small_b16
+    unauthenticated_model = family_models.small_b16
+    assert isinstance(unauthenticated_model, Model)
+    assert unauthenticated_model.inner_llm.model == "qw/qwen-small-16b"
+    assert unauthenticated_model.inner_llm.api_key is None
 
     monkeypatch.setenv("API_KEY", "from-env")
     small_model = family_models.small_b16
@@ -368,6 +370,30 @@ def test_discover_provider_models_calls_models_endpoint(
     assert captured["auth"] == "Bearer test-token"
     assert captured["user_agent"] == model_generator.DEFAULT_HTTP_USER_AGENT
     assert captured["timeout"] == 12.5
+
+
+def test_discover_provider_models_skips_auth_when_api_key_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_urlopen(
+        http_request: request.Request,
+        timeout: float,
+    ) -> _FakeHTTPResponse:
+        captured["auth"] = http_request.headers.get("Authorization")
+        captured["timeout"] = timeout
+        return _FakeHTTPResponse(b'{"data":[{"id":"first-model"}]}')
+
+    monkeypatch.setattr(model_generator.request, "urlopen", fake_urlopen)
+
+    discovered = model_generator.discover_provider_models(
+        base_url="https://provider.example/v1",
+    )
+
+    assert discovered == ("first-model",)
+    assert captured["auth"] is None
+    assert captured["timeout"] == 30.0
 
 
 def test_discover_provider_models_surfaces_http_error_body(

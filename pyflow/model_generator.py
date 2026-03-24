@@ -8,7 +8,7 @@ The generation flow is intentionally split into two phases:
 
 The `api_key` argument is used only for the discovery HTTP request. Generated
 model access does not serialize that key into the output module; runtime access
-always resolves credentials from `api_key_env_var` when a model property is
+optionally resolves credentials from `api_key_env_var` when a model property is
 read.
 """
 
@@ -205,8 +205,8 @@ def generate_models_file(
 
     The generated module exposes provider namespaces nested directly inside
     ``models`` plus a flat top-level view (``models.<provider>_<alias>``).
-    Each model access returns a fresh ``Model`` instance and resolves its API
-    key from ``api_key_env_var`` at access time.
+    Each model access returns a fresh ``Model`` instance and optionally resolves
+    its API key from ``api_key_env_var`` at access time.
 
     Generated blocks for providers other than ``provider_name`` are preserved.
     """
@@ -437,7 +437,7 @@ def _render_support_block() -> str:
             "    )",
             "",
             "",
-            "def _resolve_api_key(*, api_key: str | SecretStr | None, api_key_env_var: str) -> SecretStr:",
+            "def _resolve_api_key(*, api_key: str | SecretStr | None, api_key_env_var: str) -> SecretStr | None:",
             "    if isinstance(api_key, SecretStr):",
             "        value = api_key.get_secret_value().strip()",
             "        if value:",
@@ -449,10 +449,7 @@ def _render_support_block() -> str:
             "    env_value = os.getenv(api_key_env_var, \"\").strip()",
             "    if env_value:",
             "        return SecretStr(env_value)",
-            "    raise ValueError(",
-            "        \"Missing API key. Pass api_key=... explicitly or set \"",
-            "        f\"{api_key_env_var} in the environment.\"",
-            "    )",
+            "    return None",
             _SUPPORT_BLOCK_END,
         ]
     )
@@ -475,7 +472,7 @@ def _render_models_module(provider_specs: Sequence[_ProviderSpec]) -> str:
         "    `models.<provider>` exposes nested provider namespaces and",
         "    `models.<provider>_<alias>` exposes the same models as a flat list.",
         "    Each model access builds a fresh",
-        "    `Model` and resolves its API key from `api_key_env_var` at access time.",
+        "    `Model` and optionally resolves its API key from `api_key_env_var` at access time.",
         '    """',
     ]
 
