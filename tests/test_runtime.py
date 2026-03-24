@@ -8,7 +8,13 @@ from pathlib import Path
 from typing import Sequence, cast
 
 import pytest
-from openhands.sdk import BaseConversation, LLM, Message, TextContent
+from openhands.sdk import (
+    Agent as OpenHandsRuntimeAgent,
+    BaseConversation,
+    LLM,
+    Message,
+    TextContent,
+)
 from openhands.sdk.llm import MessageToolCall
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.testing import TestLLMExhaustedError
@@ -96,6 +102,7 @@ def test_agent_replacing_overrides_selected_fields_only() -> None:
         model=_test_model_with_finishes("run_one"),
         contexts=(docs("plan.md"),),
         tools=(),
+        system_prompt="base_prompt.j2",
         workspace="workspace-a",
     )
 
@@ -105,6 +112,7 @@ def test_agent_replacing_overrides_selected_fields_only() -> None:
     assert replaced.model is agent.model
     assert replaced.contexts == agent.contexts
     assert replaced.tools == agent.tools
+    assert replaced.system_prompt == agent.system_prompt
     assert replaced.workspace == "workspace-b"
     assert agent.workspace == "workspace-a"
 
@@ -118,6 +126,7 @@ def test_agent_replacing_supports_multiple_overrides() -> None:
         model=base_model,
         contexts=base_contexts,
         tools=(),
+        system_prompt="base_prompt.j2",
         workspace="workspace-a",
     )
 
@@ -125,16 +134,19 @@ def test_agent_replacing_supports_multiple_overrides() -> None:
         model=updated_model,
         contexts=updated_contexts,
         tools=(_session_render_sum_tool,),
+        system_prompt="custom_prompt.j2",
         workspace="workspace-b",
     )
 
     assert replaced.model is updated_model
     assert replaced.contexts == updated_contexts
     assert replaced.tools == (_session_render_sum_tool,)
+    assert replaced.system_prompt == "custom_prompt.j2"
     assert replaced.workspace == "workspace-b"
     assert agent.model is base_model
     assert agent.contexts == base_contexts
     assert agent.tools == ()
+    assert agent.system_prompt == "base_prompt.j2"
     assert agent.workspace == "workspace-a"
 
 
@@ -617,6 +629,10 @@ def test_agent_builds_openhands_agent_with_test_model_llm() -> None:
 
     assert isinstance(openhands_agent.llm, TestLLM)
     assert openhands_agent.llm is model.llm
+    assert (
+        openhands_agent.system_prompt_filename
+        == OpenHandsRuntimeAgent.model_fields["system_prompt_filename"].default
+    )
     assert openhands_agent.system_prompt_kwargs["cli_mode"] is True
 
 
@@ -633,6 +649,19 @@ def test_agent_builds_noninteractive_openhands_agent_for_background_runs() -> No
     assert isinstance(openhands_agent.llm, TestLLM)
     assert openhands_agent.llm is model.llm
     assert openhands_agent.system_prompt_kwargs["cli_mode"] is False
+
+
+def test_agent_builds_openhands_agent_with_custom_system_prompt() -> None:
+    model = Model.test(
+        scripted_responses=(
+            Message(role="assistant", content=[TextContent(text="Done")]),
+        )
+    )
+    agent = Agent(model=model, tools=(), system_prompt="custom_prompt.j2")
+
+    openhands_agent = agent._build_openhands_agent(runtime_model=model, interactive=False)
+
+    assert openhands_agent.system_prompt_filename == "custom_prompt.j2"
 
 
 def test_agent_rejects_models_without_native_tool_calling_support() -> None:

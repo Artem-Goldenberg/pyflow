@@ -30,6 +30,11 @@ from pyflow.tooling import Tool, compile_openhands_tools, default_agent_tools
 from pyflow.utils import convert_to_request
 
 
+DEFAULT_SYSTEM_PROMPT = cast(
+    str, OpenHandsAgent.model_fields["system_prompt_filename"].default,
+)
+
+
 @dataclass(frozen=True, kw_only=True)
 class Agent:
     """
@@ -39,12 +44,14 @@ class Agent:
         model: Pyflow model that owns the OpenHands LLM used for execution.
         contexts: Contexts rendered globally before request steps.
         tools: Tools attached to every run.
+        system_prompt: OpenHands system prompt template filename or absolute path.
         workspace: OpenHands workspace path for execution.
     """
 
     model: Model
     contexts: Sequence[Context] = ()
     tools: Sequence[Tool] = field(default_factory=default_agent_tools)
+    system_prompt: str | Path = DEFAULT_SYSTEM_PROMPT
     workspace: str | Path = field(default_factory=Path.cwd)
 
     def replacing(
@@ -53,6 +60,7 @@ class Agent:
         model: Model | None = None,
         contexts: Sequence[Context] | None = None,
         tools: Sequence[Tool] | None = None,
+        system_prompt: str | Path | None = None,
         workspace: str | Path | None = None,
     ) -> Agent:
         """
@@ -62,6 +70,7 @@ class Agent:
             model: Optional replacement model.
             contexts: Optional replacement global contexts.
             tools: Optional replacement default tools.
+            system_prompt: Optional replacement system prompt template.
             workspace: Optional replacement workspace path.
 
         Returns:
@@ -72,6 +81,9 @@ class Agent:
             model=self.model if model is None else model,
             contexts=self.contexts if contexts is None else contexts,
             tools=self.tools if tools is None else tools,
+            system_prompt=(
+                self.system_prompt if system_prompt is None else system_prompt
+            ),
             workspace=self.workspace if workspace is None else workspace,
         )
 
@@ -345,6 +357,7 @@ class Agent:
         return OpenHandsAgent(
             llm=runtime_model.inner_llm,
             tools=list(tool_specs),
+            system_prompt_filename=str(self.system_prompt),
             system_prompt_kwargs={"cli_mode": interactive},
         )
 
