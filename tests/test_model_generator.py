@@ -120,6 +120,27 @@ def test_generate_models_file_upgrades_legacy_provider_blocks(tmp_path: Path) ->
     assert "_LazyModelReference(" not in content
 
 
+def test_generate_models_file_omits_api_key_env_var_when_not_configured(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "generated_models.py"
+    model_generator.generate_models_file(
+        provider_name="local",
+        base_url="http://localhost:11434/v1",
+        model_ids=("llama3.2",),
+        output_path=output,
+    )
+
+    content = output.read_text(encoding="utf-8")
+    generated = _load_module(module_path=output, module_name="generated_models_no_env_var_test")
+
+    assert "api_key_env_var=None" in content
+    assert '"api_key_env_var": null' in content
+    assert 'api_key_env_var="API_KEY"' not in content
+    assert isinstance(generated.models.local.llama3_2, Model)
+    assert generated.models.local.llama3_2.inner_llm.api_key is None
+
+
 def test_generated_models_use_distinct_private_class_names_for_namespaces(
     tmp_path: Path,
 ) -> None:
@@ -129,6 +150,7 @@ def test_generated_models_use_distinct_private_class_names_for_namespaces(
         base_url="https://provider.example/v1",
         model_ids=("qwen-16b", "qwen-small-16b"),
         output_path=output,
+        api_key_env_var="API_KEY",
     )
 
     content = output.read_text(encoding="utf-8")
@@ -152,6 +174,7 @@ def test_generated_models_expose_two_level_namespaces_and_fresh_properties(
         base_url="https://provider.example/v1",
         model_ids=("qwen-16b", "qwen-small-16b"),
         output_path=output,
+        api_key_env_var="API_KEY",
     )
 
     generated = _load_module(module_path=output, module_name="generated_models_runtime_test")
@@ -211,6 +234,7 @@ def test_generated_models_flatten_provider_named_models(
         base_url="https://provider.example/v1",
         model_ids=("groq/compound", "groq/compound-mini"),
         output_path=output,
+        api_key_env_var="API_KEY",
     )
 
     generated = _load_module(module_path=output, module_name="generated_models_branch_test")
@@ -233,6 +257,7 @@ def test_generated_models_keep_numeric_versions_flat(
         base_url="https://provider.example/v1",
         model_ids=("qwen-1.5",),
         output_path=output,
+        api_key_env_var="API_KEY",
     )
 
     generated = _load_module(module_path=output, module_name="generated_models_numeric_version_test")
@@ -255,6 +280,7 @@ def test_generated_models_use_protocol_separately_from_provider_alias(
         base_url="https://provider.example/v1",
         model_ids=("gpt-4.1",),
         output_path=output,
+        api_key_env_var="API_KEY",
     )
 
     generated = _load_module(module_path=output, module_name="generated_models_protocol_test")
@@ -275,6 +301,7 @@ def test_generated_models_flatten_repeated_family_names(
         base_url="https://provider.example/v1",
         model_ids=("qwen/qwen3-32b", "groq/compound-mini"),
         output_path=output,
+        api_key_env_var="API_KEY",
     )
 
     generated = _load_module(module_path=output, module_name="generated_models_flatten_test")
@@ -298,7 +325,7 @@ def test_generate_models_from_provider_uses_api_key_only_for_discovery(
         *,
         base_url: str,
         api_key: str | SecretStr | None = None,
-        api_key_env_var: str = model_generator.DEFAULT_API_KEY_ENV_VAR,
+        api_key_env_var: str | None = None,
         models_path: str = "/models",
         timeout_seconds: float = 30.0,
     ) -> Sequence[str]:

@@ -642,7 +642,7 @@ def test_agent_rejects_models_without_native_tool_calling_support() -> None:
     agent = Agent(model=model)
 
     with pytest.raises(ValueError, match="does not support function/tool calls"):
-        agent._build_openhands_agent(runtime_model=model)
+        agent._build_openhands_agent(runtime_model=model, interactive=False)
 
 
 def test_agent_render_message_with_context(snapshot_regen: bool) -> None:

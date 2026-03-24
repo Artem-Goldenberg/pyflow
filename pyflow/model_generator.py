@@ -59,7 +59,7 @@ class _ProviderSpec:
     provider_name: str
     protocol: str
     base_url: str
-    api_key_env_var: str
+    api_key_env_var: str | None
     model_ids: Sequence[str]
 
 
@@ -70,7 +70,7 @@ def generate_models_from_provider(
     base_url: str,
     output_path: str | Path = DEFAULT_GENERATED_MODELS_PATH,
     api_key: str | SecretStr | None = None,
-    api_key_env_var: str = DEFAULT_API_KEY_ENV_VAR,
+    api_key_env_var: str | None = None,
     models_path: str = "/models",
     timeout_seconds: float = 30.0,
 ) -> Path:
@@ -82,8 +82,8 @@ def generate_models_from_provider(
         base_url: Provider base URL used for both discovery and runtime model construction.
         output_path: Importable module path that stores generated model bindings.
         api_key: Optional API key used only for the discovery request.
-        api_key_env_var: Environment variable read each time a generated model
-            property is accessed at runtime.
+        api_key_env_var: Optional environment variable read each time a
+            generated model property is accessed at runtime.
         models_path: Relative endpoint to discover models from (default ``/models``).
         timeout_seconds: HTTP timeout for discovery request.
 
@@ -111,7 +111,7 @@ def discover_provider_models(
     *,
     base_url: str,
     api_key: str | SecretStr | None = None,
-    api_key_env_var: str = DEFAULT_API_KEY_ENV_VAR,
+    api_key_env_var: str | None = None,
     models_path: str = "/models",
     timeout_seconds: float = 30.0,
 ) -> Sequence[str]:
@@ -122,7 +122,8 @@ def discover_provider_models(
         base_url: Provider base URL.
         api_key: API key used only for the discovery request as
             ``Authorization: Bearer <key>`` when provided.
-        api_key_env_var: Environment variable fallback for the discovery request.
+        api_key_env_var: Optional environment variable fallback for the
+            discovery request.
         models_path: Relative endpoint path for model listing.
         timeout_seconds: HTTP timeout for the discovery request.
 
@@ -198,7 +199,7 @@ def generate_models_file(
     base_url: str,
     model_ids: Sequence[str],
     output_path: str | Path = DEFAULT_GENERATED_MODELS_PATH,
-    api_key_env_var: str = DEFAULT_API_KEY_ENV_VAR,
+    api_key_env_var: str | None = None,
 ) -> Path:
     """
     Upsert generated provider models into a Python module.
@@ -206,7 +207,7 @@ def generate_models_file(
     The generated module exposes provider namespaces nested directly inside
     ``models`` plus a flat top-level view (``models.<provider>_<alias>``).
     Each model access returns a fresh ``Model`` instance and optionally resolves
-    its API key from ``api_key_env_var`` at access time.
+    its API key from ``api_key_env_var`` at access time when configured.
 
     Generated blocks for providers other than ``provider_name`` are preserved.
     """
@@ -264,10 +265,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--api-key-env-var",
-        default=DEFAULT_API_KEY_ENV_VAR,
+        default=None,
         help=(
-            "Environment variable used for discovery fallback and for runtime "
-            "model access in the generated module (default: API_KEY)."
+            "Optional environment variable used for discovery fallback and for "
+            "runtime model access in the generated module."
         ),
     )
     parser.add_argument(
@@ -394,7 +395,7 @@ def _is_host_resolution_error(reason: object) -> bool:
 def _resolve_optional_api_key(
     *,
     api_key: str | SecretStr | None,
-    api_key_env_var: str,
+    api_key_env_var: str | None,
 ) -> str | None:
     if isinstance(api_key, SecretStr):
         key_value = api_key.get_secret_value().strip()
@@ -405,6 +406,9 @@ def _resolve_optional_api_key(
 
     if key_value:
         return key_value
+
+    if api_key_env_var is None:
+        return None
 
     env_value = os.getenv(api_key_env_var, "").strip()
     return env_value or None
@@ -424,7 +428,7 @@ def _render_support_block() -> str:
     return "\n".join(
         [
             _SUPPORT_BLOCK_START,
-            "def _create_model(*, model_id: str, base_url: str, api_key_env_var: str) -> Model:",
+            "def _create_model(*, model_id: str, base_url: str, api_key_env_var: str | None) -> Model:",
             '    """Create a fresh runtime model for one registry access."""',
             "    resolved_key = _resolve_api_key(",
             "        api_key=None,",
@@ -437,7 +441,7 @@ def _render_support_block() -> str:
             "    )",
             "",
             "",
-            "def _resolve_api_key(*, api_key: str | SecretStr | None, api_key_env_var: str) -> SecretStr | None:",
+            "def _resolve_api_key(*, api_key: str | SecretStr | None, api_key_env_var: str | None) -> SecretStr | None:",
             "    if isinstance(api_key, SecretStr):",
             "        value = api_key.get_secret_value().strip()",
             "        if value:",
@@ -446,6 +450,8 @@ def _render_support_block() -> str:
             "        value = api_key.strip()",
             "        if value:",
             "            return SecretStr(value)",
+            "    if api_key_env_var is None:",
+            "        return None",
             "    env_value = os.getenv(api_key_env_var, \"\").strip()",
             "    if env_value:",
             "        return SecretStr(env_value)",
@@ -752,7 +758,7 @@ def _render_family_class_block(
     entries: Sequence[_ModelEntry],
     protocol: str,
     base_url: str,
-    api_key_env_var: str,
+    api_key_env_var: str | None,
     indent: str,
 ) -> Sequence[str]:
     family_class_name = _family_models_class_name(family_alias)
@@ -793,7 +799,7 @@ def _render_provider_class_block(
     grouped_entries: dict[str, list[_ModelEntry]],
     protocol: str,
     base_url: str,
-    api_key_env_var: str,
+    api_key_env_var: str | None,
     indent: str,
 ) -> Sequence[str]:
     lines = [f"{indent}class {provider_class_name}:"]
@@ -841,7 +847,7 @@ def _render_model_property_block(
     property_name: str,
     model_id: str,
     base_url: str,
-    api_key_env_var: str,
+    api_key_env_var: str | None,
     indent: str,
 ) -> Sequence[str]:
     return (
@@ -942,12 +948,10 @@ def _parse_provider_block(
         }
         model_id = _string_literal(keyword_nodes.get("model_id"))
         base_url_value = _string_literal(keyword_nodes.get("base_url"))
-        api_key_env_var_value = _string_literal(keyword_nodes.get("api_key_env_var"))
-        if (
-            model_id is None
-            or base_url_value is None
-            or api_key_env_var_value is None
-        ):
+        api_key_env_var_value = _optional_string_literal(
+            keyword_nodes.get("api_key_env_var")
+        )
+        if model_id is None or base_url_value is None:
             continue
 
         if model_id not in seen_ids:
@@ -959,7 +963,7 @@ def _parse_provider_block(
         if api_key_env_var is None:
             api_key_env_var = api_key_env_var_value
 
-    if not model_ids or base_url is None or api_key_env_var is None:
+    if not model_ids or base_url is None:
         return None
 
     return _ProviderSpec(
@@ -998,7 +1002,7 @@ def _parse_provider_metadata_comment(
         return None
     if (
         not isinstance(base_url, str)
-        or not isinstance(api_key_env_var, str)
+        or not (api_key_env_var is None or isinstance(api_key_env_var, str))
         or not isinstance(model_ids, list)
         or any(not isinstance(model_id, str) for model_id in model_ids)
     ):
@@ -1022,6 +1026,22 @@ def _string_literal(node: ast.AST | None) -> str | None:
     except (SyntaxError, ValueError):
         return None
 
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def _optional_string_literal(node: ast.AST | None) -> str | None:
+    if node is None:
+        return None
+
+    try:
+        value = ast.literal_eval(node)
+    except (SyntaxError, ValueError):
+        return None
+
+    if value is None:
+        return None
     if isinstance(value, str):
         return value
     return None
