@@ -221,6 +221,26 @@ def test_generated_models_flatten_provider_named_models(
     assert not hasattr(generated.models.mix, "groq")
 
 
+def test_generated_models_keep_numeric_versions_flat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "generated_models.py"
+    model_generator.generate_models_file(
+        provider_name="qw",
+        base_url="https://provider.example/v1",
+        model_ids=("qwen-1.5",),
+        output_path=output,
+    )
+
+    generated = _load_module(module_path=output, module_name="generated_models_numeric_version_test")
+
+    monkeypatch.setenv("API_KEY", "manual-key")
+    assert isinstance(generated.models.qw.qwen_1_5, Model)
+    assert isinstance(generated.models.qw_qwen_1_5, Model)
+    assert not hasattr(generated.models.qw, "qwen")
+
+
 def test_generated_models_flatten_repeated_family_names(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

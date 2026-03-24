@@ -618,6 +618,8 @@ def _classify_model_id(*, provider_name: str, model_id: str) -> tuple[str, str |
     raw_tokens = [token for token in re.split(r"[._-]+", target) if token]
     if len(raw_tokens) < 2:
         return (_sanitize_identifier(target), None)
+    if re.fullmatch(r"\d+", raw_tokens[1]) is not None:
+        return (_sanitize_identifier(target), None)
 
     family_alias = _normalize_family_alias(raw_tokens[0])
     concrete_tokens = list(raw_tokens[1:])
