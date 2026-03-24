@@ -57,6 +57,7 @@ class _FlatModelEntry:
 @dataclass(frozen=True, kw_only=True)
 class _ProviderSpec:
     provider_name: str
+    protocol: str
     base_url: str
     api_key_env_var: str
     model_ids: Sequence[str]
@@ -65,6 +66,7 @@ class _ProviderSpec:
 def generate_models_from_provider(
     *,
     provider: str,
+    protocol: str | None = None,
     base_url: str,
     output_path: str | Path = DEFAULT_GENERATED_MODELS_PATH,
     api_key: str | SecretStr | None = None,
@@ -97,6 +99,7 @@ def generate_models_from_provider(
     )
     return generate_models_file(
         provider_name=provider,
+        protocol=protocol or provider,
         base_url=base_url,
         model_ids=model_ids,
         output_path=output_path,
@@ -191,6 +194,7 @@ def extract_model_ids(payload: object) -> Sequence[str]:
 def generate_models_file(
     *,
     provider_name: str,
+    protocol: str | None = None,
     base_url: str,
     model_ids: Sequence[str],
     output_path: str | Path = DEFAULT_GENERATED_MODELS_PATH,
@@ -212,6 +216,7 @@ def generate_models_file(
     provider_specs = _extract_provider_specs(existing_content)
     provider_specs[provider_alias] = _ProviderSpec(
         provider_name=provider_alias,
+        protocol=_validate_provider_name(protocol or provider_alias),
         base_url=base_url.rstrip("/"),
         api_key_env_var=api_key_env_var,
         model_ids=_normalize_model_ids(model_ids),
@@ -240,6 +245,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--base-url",
         required=True,
         help="Provider base URL (for example: https://api.openai.com/v1).",
+    )
+    parser.add_argument(
+        "--protocol",
+        default=None,
+        help=(
+            "LiteLLM protocol/provider prefix used in runtime model names "
+            "(defaults to the provider alias)."
+        ),
     )
     parser.add_argument(
         "--api-key",
@@ -277,6 +290,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     generated_path = generate_models_from_provider(
         provider=args.provider,
+        protocol=args.protocol,
         base_url=args.base_url,
         output_path=args.output,
         api_key=args.api_key,
@@ -514,6 +528,7 @@ def _render_provider_block(provider_spec: _ProviderSpec) -> Sequence[str]:
         _render_provider_class_block(
             provider_class_name=_provider_models_class_name(provider_spec.provider_name),
             grouped_entries=grouped_entries,
+            protocol=provider_spec.protocol,
             base_url=provider_spec.base_url,
             api_key_env_var=provider_spec.api_key_env_var,
             indent="    ",
@@ -530,7 +545,10 @@ def _render_provider_block(provider_spec: _ProviderSpec) -> Sequence[str]:
         lines.extend(
             _render_model_property_block(
                 property_name=flat_entry.property_name,
-                model_id=flat_entry.model_id,
+                model_id=_runtime_model_id(
+                    protocol=provider_spec.protocol,
+                    model_id=flat_entry.model_id,
+                ),
                 base_url=provider_spec.base_url,
                 api_key_env_var=provider_spec.api_key_env_var,
                 indent="    ",
@@ -735,6 +753,7 @@ def _render_family_class_block(
     *,
     family_alias: str,
     entries: Sequence[_ModelEntry],
+    protocol: str,
     base_url: str,
     api_key_env_var: str,
     indent: str,
@@ -751,7 +770,10 @@ def _render_family_class_block(
         body.extend(
             _render_model_property_block(
                 property_name=entry.model_alias,
-                model_id=entry.model_id,
+                model_id=_runtime_model_id(
+                    protocol=protocol,
+                    model_id=entry.model_id,
+                ),
                 base_url=base_url,
                 api_key_env_var=api_key_env_var,
                 indent=f"{indent}    ",
@@ -772,6 +794,7 @@ def _render_provider_class_block(
     *,
     provider_class_name: str,
     grouped_entries: dict[str, list[_ModelEntry]],
+    protocol: str,
     base_url: str,
     api_key_env_var: str,
     indent: str,
@@ -788,6 +811,7 @@ def _render_provider_class_block(
                 _render_family_class_block(
                     family_alias=provider_alias,
                     entries=entries,
+                    protocol=protocol,
                     base_url=base_url,
                     api_key_env_var=api_key_env_var,
                     indent=f"{indent}    ",
@@ -799,7 +823,10 @@ def _render_provider_class_block(
         body.extend(
             _render_model_property_block(
                 property_name=entry.provider_alias,
-                model_id=entry.model_id,
+                model_id=_runtime_model_id(
+                    protocol=protocol,
+                    model_id=entry.model_id,
+                ),
                 base_url=base_url,
                 api_key_env_var=api_key_env_var,
                 indent=f"{indent}    ",
@@ -831,6 +858,12 @@ def _render_model_property_block(
     )
 
 
+def _runtime_model_id(*, protocol: str, model_id: str) -> str:
+    if "/" in model_id:
+        return model_id
+    return f"{protocol}/{model_id}"
+
+
 def _provider_models_class_name(provider_name: str) -> str:
     return f"_{_identifier_to_class_name(provider_name)}ProviderModels"
 
@@ -849,6 +882,7 @@ def _identifier_to_class_name(value: str) -> str:
 def _render_provider_spec_comment(provider_spec: _ProviderSpec) -> str:
     spec_payload = json.dumps(
         {
+            "protocol": provider_spec.protocol,
             "base_url": provider_spec.base_url,
             "api_key_env_var": provider_spec.api_key_env_var,
             "model_ids": list(provider_spec.model_ids),
@@ -933,6 +967,7 @@ def _parse_provider_block(
 
     return _ProviderSpec(
         provider_name=provider_name,
+        protocol=provider_name,
         base_url=base_url,
         api_key_env_var=api_key_env_var,
         model_ids=tuple(model_ids),
@@ -956,8 +991,14 @@ def _parse_provider_metadata_comment(
         return None
 
     base_url = payload.get("base_url")
+    protocol = payload.get("protocol")
     api_key_env_var = payload.get("api_key_env_var")
     model_ids = payload.get("model_ids")
+    if (
+        protocol is not None
+        and not isinstance(protocol, str)
+    ):
+        return None
     if (
         not isinstance(base_url, str)
         or not isinstance(api_key_env_var, str)
@@ -968,6 +1009,7 @@ def _parse_provider_metadata_comment(
 
     return _ProviderSpec(
         provider_name=provider_name,
+        protocol=_validate_provider_name(protocol or provider_name),
         base_url=base_url,
         api_key_env_var=api_key_env_var,
         model_ids=tuple(model_ids),

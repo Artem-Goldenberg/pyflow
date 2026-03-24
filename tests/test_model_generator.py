@@ -175,7 +175,7 @@ def test_generated_models_expose_two_level_namespaces_and_fresh_properties(
     assert first_model is not flat_model
     first_llm = first_model.inner_llm
     assert first_llm is first_model.inner_llm
-    assert first_llm.model == "qwen-16b"
+    assert first_llm.model == "qw/qwen-16b"
     assert first_llm.base_url == "https://provider.example/v1"
     assert isinstance(first_llm.api_key, SecretStr)
     assert first_llm.api_key.get_secret_value() == "manual-key"
@@ -194,7 +194,7 @@ def test_generated_models_expose_two_level_namespaces_and_fresh_properties(
     small_model = family_models.small_b16
     assert isinstance(small_model, Model)
     env_llm = small_model.inner_llm
-    assert env_llm.model == "qwen-small-16b"
+    assert env_llm.model == "qw/qwen-small-16b"
     assert isinstance(env_llm.api_key, SecretStr)
     assert env_llm.api_key.get_secret_value() == "from-env"
 
@@ -239,6 +239,28 @@ def test_generated_models_keep_numeric_versions_flat(
     assert isinstance(generated.models.qw.qwen_1_5, Model)
     assert isinstance(generated.models.qw_qwen_1_5, Model)
     assert not hasattr(generated.models.qw, "qwen")
+    assert generated.models.qw.qwen_1_5.inner_llm.model == "qw/qwen-1.5"
+
+
+def test_generated_models_use_protocol_separately_from_provider_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "generated_models.py"
+    model_generator.generate_models_file(
+        provider_name="local",
+        protocol="openai",
+        base_url="https://provider.example/v1",
+        model_ids=("gpt-4.1",),
+        output_path=output,
+    )
+
+    generated = _load_module(module_path=output, module_name="generated_models_protocol_test")
+
+    monkeypatch.setenv("API_KEY", "manual-key")
+    assert isinstance(generated.models.local.gpt_4_1, Model)
+    assert isinstance(generated.models.local_gpt_4_1, Model)
+    assert generated.models.local.gpt_4_1.inner_llm.model == "openai/gpt-4.1"
 
 
 def test_generated_models_flatten_repeated_family_names(
@@ -312,6 +334,7 @@ def test_generate_models_from_provider_uses_api_key_only_for_discovery(
     }
     assert "discovery-token" not in content
     assert "RUNTIME_KEY" in content
+    assert '"protocol": "qw"' in content
 
 
 def test_discover_provider_models_calls_models_endpoint(
