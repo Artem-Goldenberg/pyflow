@@ -350,6 +350,14 @@ def test_session_render_full_includes_prompt_construction_context(
     assert "\"properties\"" in session.render_full()
 
 
+def test_session_exposes_conversation_stats_metrics_and_token_usage() -> None:
+    session = "Collect metrics." >> _agent_with_finishes("done")
+
+    assert session.conversation_stats is session.conversation.conversation_stats
+    assert session.metrics == session.conversation_stats.get_combined_metrics()
+    assert session.token_usage == session.metrics.accumulated_token_usage
+
+
 def test_session_repr_matches_chat_transcript_in_interactive_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

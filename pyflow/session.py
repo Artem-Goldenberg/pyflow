@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING, Sequence
 
 from openhands.sdk import BaseConversation, Event
 from pydantic import BaseModel
+from openhands.sdk import BaseConversation, ConversationStats, Event
+from openhands.sdk.llm.utils.metrics import Metrics, TokenUsage
 from rich.console import Console, ConsoleOptions, RenderResult
 
 from pyflow.display import (
@@ -65,6 +67,24 @@ class Session:
         state = getattr(self.conversation, "state", None)
         execution_status = getattr(state, "execution_status", None)
         return getattr(execution_status, "value", None)
+
+    @property
+    def conversation_stats(self) -> ConversationStats:
+        """Aggregated OpenHands conversation stats for this session."""
+        return self.conversation.conversation_stats
+
+    @property
+    def metrics(self) -> Metrics:
+        """Combined LLM metrics accumulated during this session."""
+        return self.conversation_stats.get_combined_metrics()
+
+    @property
+    def token_usage(self) -> TokenUsage:
+        """Aggregated token usage accumulated during this session."""
+        token_usage = self.metrics.accumulated_token_usage
+        if token_usage is None:
+            raise RuntimeError("Session metrics did not expose accumulated token usage.")
+        return token_usage
 
     @property
     def transcript(self) -> SessionTranscript:
