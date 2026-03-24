@@ -12,6 +12,21 @@ from pydantic import SecretStr
 from pyflow.session import Session
 from pyflow.sink import RequestInput
 
+
+def _validate_llm_constructor_kwargs(kwargs: dict[str, Any]) -> None:
+    if "tool_choice" not in kwargs:
+        return
+
+    tool_choice = kwargs["tool_choice"]
+    raise ValueError(
+        "pyflow does not support configuring `tool_choice` on `Model`."
+        f" Received `tool_choice={tool_choice!r}`. OpenHands forces "
+        "`tool_choice='auto'` on the Responses API path and drops "
+        "`tool_choice` entirely when `native_tool_calling=False`, so "
+        "`tool_choice='required'` cannot be enforced here."
+    )
+
+
 @dataclass(kw_only=True)
 class Model(ABC):
     """
@@ -61,6 +76,7 @@ class Model(ABC):
         Returns:
             Pyflow model wrapper owning the configured OpenHands LLM.
         """
+        _validate_llm_constructor_kwargs(kwargs)
         return AIModel(
             llm=_create_api_llm(
                 name=name,
@@ -98,6 +114,7 @@ class Model(ABC):
         Returns:
             Pyflow model wrapper owning the authenticated OpenHands LLM.
         """
+        _validate_llm_constructor_kwargs(kwargs)
         return AIModel(
             llm=LLM.subscription_login(
                 vendor=vendor,

@@ -7,7 +7,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, cast, Sequence
 
-from openhands.sdk import Agent as OpenHandsAgent, BaseConversation, Conversation
+from openhands.sdk import (
+    Agent as OpenHandsAgent,
+    BaseConversation,
+    Conversation,
+    Tool as OpenHandsToolSpec,
+)
 
 from pyflow.context import Context
 from pyflow.display import (
@@ -333,8 +338,41 @@ class Agent:
         interactive: bool,
     ) -> OpenHandsAgent:
         tool_specs = compile_openhands_tools(self.tools)
+        self._validate_tool_calling_support(
+            runtime_model=runtime_model,
+            tool_specs=tool_specs,
+        )
         return OpenHandsAgent(
             llm=runtime_model.inner_llm,
             tools=list(tool_specs),
             system_prompt_kwargs={"cli_mode": interactive},
+        )
+
+    def _validate_tool_calling_support(
+        self,
+        *,
+        runtime_model: Model,
+        tool_specs: Sequence[OpenHandsToolSpec],
+    ) -> None:
+        if not tool_specs:
+            return
+
+        llm = runtime_model.inner_llm
+        if llm.uses_responses_api() or not llm.native_tool_calling:
+            return
+
+        model_info = llm.model_info
+        if model_info is None:
+            return
+
+        supports_function_calling = model_info.get("supports_function_calling")
+        if supports_function_calling is not False:
+            return
+
+        model_name = llm.model_canonical_name or llm.model
+        raise ValueError(
+            f"Model '{model_name}' is configured with native tool calling, "
+            "but LiteLLM reports that it does not support function/tool calls. "
+            "Choose a model with native tool support or set "
+            "`native_tool_calling=False` so OpenHands can mock tool calls."
         )

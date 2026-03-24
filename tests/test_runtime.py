@@ -487,6 +487,17 @@ def test_model_from_api_allows_missing_api_key() -> None:
     assert model.llm.api_key is None
 
 
+def test_model_from_api_rejects_tool_choice_configuration() -> None:
+    with pytest.raises(ValueError, match="tool_choice='required'") as exc_info:
+        Model.from_api(
+            name="openai/gpt-4.1",
+            api_key=SecretStr("test-key"),
+            tool_choice="required",
+        )
+
+    assert "does not support configuring `tool_choice`" in str(exc_info.value)
+
+
 def test_ai_model_direct_wrapper_preserves_llm_identity() -> None:
     llm = LLM(model="openai/gpt-4.1", api_key=SecretStr("test-key"))
     model = AIModel(llm=llm)
@@ -622,6 +633,16 @@ def test_agent_builds_noninteractive_openhands_agent_for_background_runs() -> No
     assert isinstance(openhands_agent.llm, TestLLM)
     assert openhands_agent.llm is model.llm
     assert openhands_agent.system_prompt_kwargs["cli_mode"] is False
+
+
+def test_agent_rejects_models_without_native_tool_calling_support() -> None:
+    llm = LLM(model="provider/no-tools", api_key=SecretStr("test-key"))
+    llm._model_info = {"supports_function_calling": False}
+    model = AIModel(llm=llm)
+    agent = Agent(model=model)
+
+    with pytest.raises(ValueError, match="does not support function/tool calls"):
+        agent._build_openhands_agent(runtime_model=model)
 
 
 def test_agent_render_message_with_context(snapshot_regen: bool) -> None:
